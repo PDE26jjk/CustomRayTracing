@@ -518,6 +518,21 @@ Shader "Universal Render Pipeline/Lit"
         }
     }
 
+    SubShader
+	{
+		Pass
+		{
+			Name "PathTracing"
+			Tags{ "LightMode" = "RayTracing" }
+
+			HLSLPROGRAM
+
+			#include "Assets/Scripts/PathTracing/Shaders/includes/PathTracingHit.hlsl"
+
+			ENDHLSL
+		}
+	}
+
     FallBack "Hidden/Universal Render Pipeline/FallbackError"
     CustomEditor "UnityEditor.Rendering.Universal.ShaderGUI.LitShader"
 }

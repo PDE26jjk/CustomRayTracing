@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -125,7 +126,7 @@ namespace UnityEngine.Rendering.Universal
 
             public ComputeBuffer GetOldRestirBuffer()
             {
-                return m_restirBuffers[1 -  curRestirBufferId];
+                return m_restirBuffers[1 - curRestirBufferId];
             }
 
             public void SwapRestirBuffer()
@@ -151,7 +152,7 @@ namespace UnityEngine.Rendering.Universal
                 m_DescKey = Hash128.Compute(ref desc);
             }
 
-            internal void Update(ref RenderTextureDescriptor cameraDesc, bool accumulation,Vector3 cameraPos, Matrix4x4 cameraMatrix)
+            internal void Update(ref RenderTextureDescriptor cameraDesc, bool accumulation, Vector3 cameraPos, Matrix4x4 cameraMatrix)
             {
                 // Accumulation Update
                 m_ConvergenceStep = (m_prevCameraMatrix.Equals(cameraMatrix) && accumulation) ? m_ConvergenceStep + 1 : 0;
@@ -186,7 +187,7 @@ namespace UnityEngine.Rendering.Universal
                     {
                         Alloc(ref accDesc);
                     }
-                }                
+                }
             }
         }
 
@@ -197,7 +198,7 @@ namespace UnityEngine.Rendering.Universal
 
             public int width, height;
             public RayTracingAccelerationStructure accelerationStructure;
-            public Texture envTexture;
+            public TextureHandle envTexture;
             public float zoom;
             public float aspectRatio;
             public int convergenceStep;
@@ -281,8 +282,8 @@ namespace UnityEngine.Rendering.Universal
                 allowAlphaTestedMaterials = true,
                 layerMask = -1,
                 shadowCastingModeMask = (1 << (int)ShadowCastingMode.Off)
-                | (1 << (int)ShadowCastingMode.On)
-                | (1 << (int)ShadowCastingMode.TwoSided),
+                                        | (1 << (int)ShadowCastingMode.On)
+                                        | (1 << (int)ShadowCastingMode.TwoSided),
                 instanceMask = 1 << 0,
             };
 
@@ -344,7 +345,7 @@ namespace UnityEngine.Rendering.Universal
                 return;
             }
             else
-            {// Camera has history data, do accumulation.
+            { // Camera has history data, do accumulation.
                 history.RequestAccess<PathTracingPersistenData>();
                 var accumulationHistory = history.GetHistoryForWrite<PathTracingPersistenData>();
                 if (accumulationHistory != null)
@@ -352,7 +353,8 @@ namespace UnityEngine.Rendering.Universal
                     Vector3 prevCameraPos = accumulationHistory.GetPrevCameraPos();
                     Matrix4x4 prevCameraMatrix = accumulationHistory.GetPrevCameraMatrix();
 
-                    accumulationHistory.Update(ref cameraData.cameraTargetDescriptor, m_PathTracing.accumulation.value, cameraData.camera.transform.position, cameraData.camera.worldToCameraMatrix);
+                    accumulationHistory.Update(ref cameraData.cameraTargetDescriptor, m_PathTracing.accumulation.value, cameraData.camera.transform.position,
+                        cameraData.camera.worldToCameraMatrix);
                     accumulationHistory.CheckAndAllocReSTIRBuffer(cameraData.camera.pixelWidth, cameraData.camera.pixelHeight);
 
                     if (accumulationHistory.GetAccumulationTexture() != null)
@@ -372,16 +374,25 @@ namespace UnityEngine.Rendering.Universal
                         if (accumulationHistory.ConvergenceStep < m_PathTracing.maximumSamples.value)
                         {
                             convergenceStep = m_PathTracing.accumulation.value ? accumulationHistory.ConvergenceStep : 0;
-
-                            using (var builder = renderGraph.AddRenderPass<PathTracingPassData>("Path Tracing pass", out var passData, m_ProfilingSampler))
+                            using (var builder = renderGraph.AddUnsafePass<PathTracingPassData>("Path Tracing pass", out var passData, m_ProfilingSampler))
                             {
+                                builder.AllowPassCulling(false);
+
+                                TextureHandle useTexture(TextureHandle textureHandle, AccessFlags flags = AccessFlags.Read)
+                                {
+                                    builder.UseTexture(textureHandle, flags);
+                                    return textureHandle;
+                                }
+
                                 // Input buffers
                                 passData.shader = rayTracingResources.PathTracingRT;
-                                passData.envTexture = m_PathTracing.envTexture.value;
-                                passData.depthTexture = builder.ReadTexture(depthTexture);
-                                passData.albedoBufferTexture = builder.ReadTexture(albedoBufferTexture);
-                                passData.specularBufferTexture = builder.ReadTexture(specularBufferTexture);
-                                passData.normalBufferTexture = builder.ReadTexture(normalBufferTexture);
+                                passData.envTexture = renderGraph.ImportTexture(RTHandles.Alloc(m_PathTracing.envTexture.value));
+                                ;
+                                builder.UseTexture(passData.envTexture);
+                                passData.depthTexture = useTexture(depthTexture);
+                                passData.albedoBufferTexture = useTexture(albedoBufferTexture);
+                                passData.specularBufferTexture = useTexture(specularBufferTexture);
+                                passData.normalBufferTexture = useTexture(normalBufferTexture);
                                 passData.restir = m_PathTracing.restir.value;
                                 passData.restirBuffer = accumulationHistory.GetCurrentRestirBuffer();
                                 passData.clearBuffer = m_PathTracing.clearRestirBuffer.value;
@@ -397,11 +408,12 @@ namespace UnityEngine.Rendering.Universal
                                 passData.convergenceStep = convergenceStep;
 
                                 // Output buffers
-                                passData.output = builder.ReadWriteTexture(frameTexture);
+                                passData.output = useTexture(frameTexture, AccessFlags.ReadWrite);
 
-                                builder.SetRenderFunc((PathTracingPassData data, RenderGraphContext ctx) =>
+                                builder.SetRenderFunc((PathTracingPassData data, UnsafeGraphContext ctx) =>
                                 {
-                                    ctx.cmd.SetRayTracingShaderPass(data.shader, "PathTracing");
+                                    CommandBufferHelpers.GetNativeCommandBuffer(ctx.cmd)
+                                        .SetRayTracingShaderPass(data.shader, "PathTracing");
                                     ctx.cmd.SetRayTracingIntParam(data.shader, Shader.PropertyToID("g_BounceCountOpaque"), data.bounceCount);
                                     ctx.cmd.SetRayTracingIntParam(data.shader, Shader.PropertyToID("g_BounceCountTransparent"), data.bounceCount);
                                     ctx.cmd.SetRayTracingAccelerationStructure(data.shader, Shader.PropertyToID("g_AccelStruct"), data.accelerationStructure);
@@ -419,7 +431,7 @@ namespace UnityEngine.Rendering.Universal
                                     ctx.cmd.SetRayTracingTextureParam(data.shader, Shader.PropertyToID("g_EnvTex"), data.envTexture);
                                     ctx.cmd.SetRayTracingTextureParam(data.shader, Shader.PropertyToID("g_Output"), data.output);
 
-                                    ctx.cmd.DispatchRays(data.shader, "PathTracingRayGenShader", (uint)data.width, (uint)data.height, 1);
+                                    ctx.cmd.DispatchRays(data.shader, "PathTracingRayGenShader", (uint)data.width, (uint)data.height, 1, null);
                                 });
                             }
 
@@ -517,7 +529,7 @@ namespace UnityEngine.Rendering.Universal
                             passData.convergenceRatio = (float)convergenceStep / m_PathTracing.maximumSamples.value;
 
                             builder.UseTexture(frameTexture, AccessFlags.Read);
-                            passData.sourceTexture = frameTexture;                            
+                            passData.sourceTexture = frameTexture;
 
                             builder.SetRenderAttachment(destination, 0, AccessFlags.Write);
 
