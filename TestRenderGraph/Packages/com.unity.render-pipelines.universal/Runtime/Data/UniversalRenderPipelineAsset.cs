@@ -3,15 +3,12 @@ using System;
 using UnityEditor;
 using UnityEditor.ProjectWindowCallback;
 using System.IO;
-using UnityEditorInternal;
 using ShaderKeywordFilter = UnityEditor.ShaderKeywordFilter;
 #endif
 using System.ComponentModel;
-using System.Linq;
-using UnityEditor.Rendering;
-using UnityEngine;
 using UnityEngine.Serialization;
 using UnityEngine.Experimental.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
 
 namespace UnityEngine.Rendering.Universal
 {
@@ -224,17 +221,6 @@ namespace UnityEngine.Rendering.Universal
         /// Use this to produce a quarter-resolution image with bi-linear filtering.
         /// </summary>
         _4xBilinear
-    }
-
-    internal enum DefaultMaterialType
-    {
-        Standard,
-        Particle,
-        Terrain,
-        Sprite,
-        UnityBuiltinDefault,
-        SpriteMask,
-        Decal
     }
 
     /// <summary>
@@ -454,7 +440,7 @@ namespace UnityEngine.Rendering.Universal
 #if UNITY_EDITOR
     [ShaderKeywordFilter.ApplyRulesIfTagsEqual("RenderPipeline", "UniversalPipeline")]
 #endif
-    public partial class UniversalRenderPipelineAsset : RenderPipelineAsset<UniversalRenderPipeline>, ISerializationCallbackReceiver, IProbeVolumeEnabledRenderPipeline, IGPUResidentRenderPipeline
+    public partial class UniversalRenderPipelineAsset : RenderPipelineAsset<UniversalRenderPipeline>, ISerializationCallbackReceiver, IProbeVolumeEnabledRenderPipeline, IGPUResidentRenderPipeline, IRenderGraphEnabledRenderPipeline, ISTPEnabledRenderPipeline
     {
         ScriptableRenderer[] m_Renderers = new ScriptableRenderer[1];
 
@@ -601,6 +587,10 @@ namespace UnityEngine.Rendering.Universal
         // Post-processing settings
         [SerializeField] ColorGradingMode m_ColorGradingMode = ColorGradingMode.LowDynamicRange;
         [SerializeField] int m_ColorGradingLutSize = 32;
+#if UNITY_EDITOR // multi_compile_fragment _ _ENABLE_ALPHA_OUTPUT
+        [ShaderKeywordFilter.SelectOrRemove(true, keywordNames: ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT)]
+#endif
+        [SerializeField] bool m_AllowPostProcessAlphaOutput = false;
 #if UNITY_EDITOR // multi_compile_local_fragment _ _USE_FAST_SRGB_LINEAR_CONVERSION
         [ShaderKeywordFilter.SelectOrRemove(true, keywordNames: ShaderKeywordStrings.UseFastSRGBLinearConversion)]
 #endif
@@ -611,7 +601,6 @@ namespace UnityEngine.Rendering.Universal
         // GPU Resident Drawer
         [FormerlySerializedAs("m_MacroBatcherMode"), SerializeField]
         private GPUResidentDrawerMode m_GPUResidentDrawerMode = GPUResidentDrawerMode.Disabled;
-        [SerializeField] bool m_UseLegacyLightmaps = false;
         [SerializeField] float m_SmallMeshScreenPercentage = 0.0f;
 
         [SerializeField] bool m_GPUResidentDrawerEnableOcclusionCullingInCameras;
@@ -622,7 +611,6 @@ namespace UnityEngine.Rendering.Universal
             enableOcclusionCulling = m_GPUResidentDrawerEnableOcclusionCullingInCameras,
             supportDitheringCrossFade = m_EnableLODCrossFade,
             allowInEditMode = true,
-            useLegacyLightmaps = m_UseLegacyLightmaps,
             smallMeshScreenPercentage = m_SmallMeshScreenPercentage,
 #if UNITY_EDITOR
             pickingShader = Shader.Find("Hidden/Universal Render Pipeline/BRGPicking"),
@@ -686,6 +674,9 @@ namespace UnityEngine.Rendering.Universal
 
         static string[] s_Names;
         static int[] s_Values;
+
+        /// <inheritdoc/>
+        public bool isImmediateModeSupported => false;
 
 #if UNITY_EDITOR
         public static readonly string packagePath = "Packages/com.unity.render-pipelines.universal";
@@ -831,18 +822,6 @@ namespace UnityEngine.Rendering.Universal
         }
 
         /// <summary>
-        /// Unity calls this function when it loads the asset or when the asset is changed with the Inspector.
-        /// </summary>
-        protected override void OnValidate()
-        {
-            DestroyRenderers();
-
-            // This will call RenderPipelineManager.CleanupRenderPipeline that in turn disposes the render pipeline instance and
-            // assign pipeline asset reference to null
-            base.OnValidate();
-        }
-
-        /// <summary>
         /// Unity calls this function when the asset is disabled.
         /// </summary>
         protected override void OnDisable()
@@ -892,6 +871,12 @@ namespace UnityEngine.Rendering.Universal
                 {
                     DestroyRenderer(ref m_Renderers[m_DefaultRendererIndex]);
                     m_Renderers[m_DefaultRendererIndex] = scriptableRendererData.InternalCreateRenderer();
+
+                    // GPU Resident Drawer may need to be reinitialized if renderer data has become incompatible/compatible
+                    if (gpuResidentDrawerMode != GPUResidentDrawerMode.Disabled)
+                    {
+                        IGPUResidentRenderPipeline.ReinitializeGPUResidentDrawer();
+                    }
                 }
 
                 return m_Renderers[m_DefaultRendererIndex];
@@ -929,6 +914,12 @@ namespace UnityEngine.Rendering.Universal
             {
                 DestroyRenderer(ref m_Renderers[index]);
                 m_Renderers[index] = m_RendererDataList[index].InternalCreateRenderer();
+
+                // GPU Resident Drawer may need to be reinitialized if renderer data has become incompatible/compatible
+                if (gpuResidentDrawerMode != GPUResidentDrawerMode.Disabled)
+                {
+                    IGPUResidentRenderPipeline.ReinitializeGPUResidentDrawer();
+                }
             }
 
             return m_Renderers[index];
@@ -1493,7 +1484,7 @@ namespace UnityEngine.Rendering.Universal
         /// <summary>
         /// Returns true if the Render Pipeline Asset supports light layers, false otherwise.
         /// </summary>
-        [Obsolete("This is obsolete, UnityEngine.Rendering.ShaderVariantLogLevel instead.", true)]
+        [Obsolete("This is obsolete, use useRenderingLayers instead.", true)]
         public bool supportsLightLayers => m_SupportsLightLayers;
 
         /// <summary>
@@ -1575,6 +1566,11 @@ namespace UnityEngine.Rendering.Universal
         }
 
         /// <summary>
+        /// Returns true if post-processing should process and output alpha. Requires the color target to have an alpha channel.
+        /// </summary>
+        public bool allowPostProcessAlphaOutput => m_AllowPostProcessAlphaOutput;
+
+        /// <summary>
         /// Returns true if fast approximation functions are used when converting between the sRGB and Linear color spaces, false otherwise.
         /// </summary>
         public bool useFastSRGBLinearConversion => m_UseFastSRGBLinearConversion;
@@ -1588,16 +1584,6 @@ namespace UnityEngine.Rendering.Universal
         /// Returns true if Data Driven Lens Flare are supported by this asset, false otherwise.
         /// </summary>
         public bool supportDataDrivenLensFlare => m_SupportDataDrivenLensFlare;
-
-        /// <summary>
-        /// Returns true if we have opted out from binding lightmaps as texture arrays.
-        /// In this case, we bind them as individual textures, which breaks the batch every time lightmaps are changed.
-        /// This is well-supported on all GPUs and consumes less memory.
-        /// Returns false if we opt for lightmap texture arrays. This is the default.
-        /// This minimizes batch breakages, but texture arrays aren't supported in a performant way on all GPUs.
-        /// Only relevant when GPU Resident Drawer is enabled.
-        /// </summary>
-        public bool useLegacyLightmaps => m_UseLegacyLightmaps && m_GPUResidentDrawerMode != GPUResidentDrawerMode.Disabled;
 
         /// <summary>
         /// Set to true to allow Adaptive performance to modify graphics quality settings during runtime.
@@ -1677,36 +1663,35 @@ namespace UnityEngine.Rendering.Universal
             }
         }
 
-        /// <summary>
-        /// Is the GPU resident drawer supported on this render pipeline.
-        /// </summary>
-        /// <param name="logReason">Should the reason for non support be logged?</param>
-        /// <returns>true if supported</returns>
-        public bool IsGPUResidentDrawerSupportedBySRP(bool logReason = false)
+        static class Strings
         {
+            public static readonly string notURPRenderer = $"{nameof(GPUResidentDrawer)} Disabled due to some configured Universal Renderers not being {nameof(UniversalRendererData)}.";
+            public static readonly string forwardPlusMissing = $"{nameof(GPUResidentDrawer)} Disabled due to some configured Universal Renderers not supporting Forward+.";
+        }
+
+        /// <inheritdoc/>
+        public bool IsGPUResidentDrawerSupportedBySRP(out string message, out LogType severty)
+        {
+            message = string.Empty;
+            severty = LogType.Warning;
+
             // if any of the renderers are not set to Forward+ return false
-            bool supported = true;
             foreach (var rendererData in m_RendererDataList)
             {
-                if (rendererData is UniversalRendererData universalRendererData)
+                if (rendererData is not UniversalRendererData universalRendererData)
                 {
-                    if (universalRendererData.renderingMode != RenderingMode.ForwardPlus)
-                    {
-                        supported = false;
-                        break;
-                    }
+                    message = Strings.notURPRenderer;
+                    return false;
                 }
-                else
-                {
-                    supported = false;
-                    break;
-                }
+
+                if (universalRendererData.renderingMode == RenderingMode.ForwardPlus)
+                    continue;
+
+                message = Strings.forwardPlusMissing;
+                return false;
             }
 
-            if(!supported && logReason)
-                Debug.LogWarning("GPUResidentDrawer: Disabled due to some configured Universal Renderers not supporting Forward+ ");
-
-            return supported;
+            return true;
         }
 
         /// <summary>
@@ -1972,5 +1957,13 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         [Obsolete("This property is no longer necessary.")]
         public ProbeVolumeSceneData probeVolumeSceneData => null;
+
+        /// <summary>
+        /// Returns true if the asset is configured to use STP as an upscaling filter
+        /// </summary>
+        public bool isStpUsed
+        {
+            get { return m_UpscalingFilter == UpscalingFilterSelection.STP; }
+        }
     }
 }

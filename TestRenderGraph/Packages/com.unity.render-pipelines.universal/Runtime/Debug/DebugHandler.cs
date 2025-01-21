@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using UnityEditor;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
@@ -21,6 +22,7 @@ namespace UnityEngine.Rendering.Universal
         static readonly int k_DebugTextureNoStereoPropertyId = Shader.PropertyToID("_DebugTextureNoStereo");
         static readonly int k_DebugTextureDisplayRect = Shader.PropertyToID("_DebugTextureDisplayRect");
         static readonly int k_DebugRenderTargetSupportsStereo = Shader.PropertyToID("_DebugRenderTargetSupportsStereo");
+        static readonly int k_DebugRenderTargetRangeRemap = Shader.PropertyToID("_DebugRenderTargetRangeRemap");
 
         // Material settings...
         static readonly int k_DebugMaterialModeId = Shader.PropertyToID("_DebugMaterialMode");
@@ -63,7 +65,7 @@ namespace UnityEngine.Rendering.Universal
 
         #region Pass Data
 
-        private static readonly ProfilingSampler s_DebugSetupSampler = new ProfilingSampler(nameof(Setup));
+        private static readonly ProfilingSampler s_DebugSetupSampler = new ProfilingSampler("Setup Debug Properties");
         private static readonly ProfilingSampler s_DebugFinalValidationSampler = new ProfilingSampler(nameof(UpdateShaderGlobalPropertiesForFinalValidationPass));
 
         DebugSetupPassData s_DebugSetupPassData = new DebugSetupPassData();
@@ -83,9 +85,12 @@ namespace UnityEngine.Rendering.Universal
         bool m_HasDebugRenderTarget;
         bool m_DebugRenderTargetSupportsStereo;
         Vector4 m_DebugRenderTargetPixelRect;
+        Vector4 m_DebugRenderTargetRangeRemap;
         RTHandle m_DebugRenderTarget;
 
         RTHandle m_DebugFontTexture;
+
+        private GraphicsBuffer m_debugDisplayConstant;
 
         readonly UniversalRenderPipelineDebugDisplaySettings m_DebugDisplaySettings;
 
@@ -176,6 +181,8 @@ namespace UnityEngine.Rendering.Universal
             {
                 m_DebugFontTexture = RTHandles.Alloc(m_RuntimeTextures.debugFontTexture);
             }
+
+            m_debugDisplayConstant = new GraphicsBuffer(GraphicsBuffer.Target.Constant, 32, Marshal.SizeOf(typeof(Vector4)));
         }
 
         public void Dispose()
@@ -184,6 +191,7 @@ namespace UnityEngine.Rendering.Universal
             m_DebugScreenColorHandle?.Release();
             m_DebugScreenDepthHandle?.Release();
             m_DebugFontTexture?.Release();
+            m_debugDisplayConstant.Dispose();
             CoreUtils.Destroy(m_HDRDebugViewMaterial);
             CoreUtils.Destroy(m_ReplacementMaterial);
         }
@@ -237,6 +245,15 @@ namespace UnityEngine.Rendering.Universal
             {
                 cmd.DisableShaderKeyword("_DEBUG_ENVIRONMENTREFLECTIONS_OFF");
             }
+
+            m_debugDisplayConstant.SetData(MaterialSettings.debugRenderingLayersColors, 0, 0, 32);
+
+            cmd.SetGlobalConstantBuffer(m_debugDisplayConstant, "_DebugDisplayConstant", 0, m_debugDisplayConstant.count * m_debugDisplayConstant.stride);
+
+            if (MaterialSettings.renderingLayersSelectedLight)
+                cmd.SetGlobalInt("_DebugRenderingLayerMask", (int)MaterialSettings.GetDebugLightLayersMask());
+            else
+                cmd.SetGlobalInt("_DebugRenderingLayerMask", (int)MaterialSettings.renderingLayerMask);
 
             switch (RenderingSettings.sceneOverrideMode)
             {
@@ -295,12 +312,13 @@ namespace UnityEngine.Rendering.Universal
             }
         }
 
-        internal void SetDebugRenderTarget(RTHandle renderTarget, Rect displayRect, bool supportsStereo)
+        internal void SetDebugRenderTarget(RTHandle renderTarget, Rect displayRect, bool supportsStereo, Vector4 dataRangeRemap)
         {
             m_HasDebugRenderTarget = true;
             m_DebugRenderTargetSupportsStereo = supportsStereo;
             m_DebugRenderTarget = renderTarget;
             m_DebugRenderTargetPixelRect = new Vector4(displayRect.x, displayRect.y, displayRect.width, displayRect.height);
+            m_DebugRenderTargetRangeRemap = dataRangeRemap;
         }
 
         internal void ResetDebugRenderTarget()
@@ -320,6 +338,7 @@ namespace UnityEngine.Rendering.Universal
 
             public Vector4 debugRenderTargetPixelRect;
             public int debugRenderTargetSupportsStereo;
+            public Vector4 debugRenderTargetRangeRemap;
 
             public TextureHandle debugFontTextureHandle;
 
@@ -341,6 +360,7 @@ namespace UnityEngine.Rendering.Universal
 
             passData.debugRenderTargetPixelRect = m_DebugRenderTargetPixelRect;
             passData.debugRenderTargetSupportsStereo = m_DebugRenderTargetSupportsStereo ? 1 : 0;
+            passData.debugRenderTargetRangeRemap = m_DebugRenderTargetRangeRemap;
 
             passData.debugFontTextureHandle = TextureHandle.nullHandle;
 
@@ -375,6 +395,7 @@ namespace UnityEngine.Rendering.Universal
 
                 cmd.SetGlobalVector(k_DebugTextureDisplayRect, data.debugRenderTargetPixelRect);
                 cmd.SetGlobalInteger(k_DebugRenderTargetSupportsStereo, data.debugRenderTargetSupportsStereo);
+                cmd.SetGlobalVector(k_DebugRenderTargetRangeRemap, data.debugRenderTargetRangeRemap);
             }
 
             var renderingSettings = data.renderingSettings;
@@ -410,15 +431,28 @@ namespace UnityEngine.Rendering.Universal
             using (var builder = renderGraph.AddRasterRenderPass<DebugFinalValidationPassData>(nameof(UpdateShaderGlobalPropertiesForFinalValidationPass), out var passData, s_DebugFinalValidationSampler))
             {
                 InitDebugFinalValidationPassData(passData, cameraData, isFinalPass);
-                passData.debugRenderTargetHandle = renderGraph.ImportTexture(m_DebugRenderTarget);
-                passData.debugFontTextureHandle = renderGraph.ImportTexture(m_DebugFontTexture);
+
+                if (m_DebugRenderTarget != null)
+                    passData.debugRenderTargetHandle = renderGraph.ImportTexture(m_DebugRenderTarget);
+
+                if (m_DebugFontTexture != null)
+                    passData.debugFontTextureHandle = renderGraph.ImportTexture(m_DebugFontTexture);
 
                 builder.AllowPassCulling(false);
                 builder.AllowGlobalStateModification(true);
-                builder.SetGlobalTextureAfterPass(passData.debugRenderTargetHandle, passData.debugTexturePropertyId);
-                builder.SetGlobalTextureAfterPass(passData.debugFontTextureHandle, k_DebugFontId);
-                builder.UseTexture(passData.debugRenderTargetHandle);
-                builder.UseTexture(passData.debugFontTextureHandle);
+
+                if (passData.debugRenderTargetHandle.IsValid())
+                {
+                    builder.UseTexture(passData.debugRenderTargetHandle);
+                    builder.SetGlobalTextureAfterPass(passData.debugRenderTargetHandle, passData.debugTexturePropertyId);
+                }
+
+                if (passData.debugFontTextureHandle.IsValid())
+                {
+                    builder.UseTexture(passData.debugFontTextureHandle);
+                    builder.SetGlobalTextureAfterPass(passData.debugFontTextureHandle, k_DebugFontId);
+                }
+
                 builder.SetRenderFunc(static (DebugFinalValidationPassData data, RasterGraphContext context) =>
                 {
                     UpdateShaderGlobalPropertiesForFinalValidationPass(context.cmd, data);
@@ -501,7 +535,7 @@ namespace UnityEngine.Rendering.Universal
         [Conditional("DEVELOPMENT_BUILD"), Conditional("UNITY_EDITOR")]
         internal void Setup(RenderGraph renderGraph, bool isPreviewCamera)
         {
-            using (var builder = renderGraph.AddRasterRenderPass<DebugSetupPassData>(nameof(Setup), out var passData, s_DebugSetupSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<DebugSetupPassData>(s_DebugSetupSampler.name, out var passData, s_DebugSetupSampler))
             {
                 InitDebugSetupPassData(passData, isPreviewCamera);
                 builder.AllowPassCulling(false);

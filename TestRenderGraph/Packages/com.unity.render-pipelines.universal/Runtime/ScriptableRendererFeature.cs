@@ -45,12 +45,18 @@ namespace UnityEngine.Rendering.Universal
 
         void OnEnable()
         {
-            Create();
+            // UUM-44048: If the pipeline is not created, don't call Create() as it may allocate RTHandles or do other
+            // things that require the pipeline to be constructed. This is safe because once the pipeline is constructed,
+            // ScriptableRendererFeature.Create() will be called by ScriptableRenderer constructor.
+            if (RenderPipelineManager.currentPipeline is UniversalRenderPipeline)
+                Create();
         }
 
         void OnValidate()
         {
-            Create();
+            // See comment in OnEnable.
+            if (RenderPipelineManager.currentPipeline is UniversalRenderPipeline)
+                Create();
         }
 
         /// <summary>
@@ -65,7 +71,7 @@ namespace UnityEngine.Rendering.Universal
         /// Override this method and return true that renderer would produce rendering layers texture.
         /// </summary>
         /// <param name="isDeferred">True if renderer is using deferred rendering mode</param>
-        /// <param name="isDeferred">True if renderer has Accurate G-Buffer Normals enabled</param>
+        /// <param name="needsGBufferAccurateNormals">True if renderer has Accurate G-Buffer Normals enabled</param>
         /// <param name="atEvent">Requeted event at which rendering layers texture will be produced</param>
         /// <param name="maskSize">Requested bit size of rendering layers texture</param>
         /// <returns></returns>

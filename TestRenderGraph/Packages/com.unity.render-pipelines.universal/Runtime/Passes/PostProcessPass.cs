@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
@@ -33,9 +32,10 @@ namespace UnityEngine.Rendering.Universal
         RTHandle m_StreakTmpTexture;
         RTHandle m_StreakTmpTexture2;
         RTHandle m_ScreenSpaceLensFlareResult;
+        RTHandle m_UserLut;
 
-        const string k_RenderPostProcessingTag = "Render PostProcessing Effects";
-        const string k_RenderFinalPostProcessingTag = "Render Final PostProcessing Pass";
+        const string k_RenderPostProcessingTag = "Blit PostProcessing Effects";
+        const string k_RenderFinalPostProcessingTag = "Blit Final PostProcessing";
         private static readonly ProfilingSampler m_ProfilingRenderPostProcessing = new ProfilingSampler(k_RenderPostProcessingTag);
         private static readonly ProfilingSampler m_ProfilingRenderFinalPostProcessing = new ProfilingSampler(k_RenderFinalPostProcessingTag);
 
@@ -56,10 +56,24 @@ namespace UnityEngine.Rendering.Universal
         Tonemapping m_Tonemapping;
         FilmGrain m_FilmGrain;
 
+        // Depth Of Field shader passes
+        const int k_GaussianDoFPassComputeCoc = 0;
+        const int k_GaussianDoFPassDownscalePrefilter = 1;
+        const int k_GaussianDoFPassBlurH = 2;
+        const int k_GaussianDoFPassBlurV = 3;
+        const int k_GaussianDoFPassComposite = 4;
+
+        const int k_BokehDoFPassComputeCoc = 0;
+        const int k_BokehDoFPassDownscalePrefilter = 1;
+        const int k_BokehDoFPassBlur = 2;
+        const int k_BokehDoFPassPostFilter = 3;
+        const int k_BokehDoFPassComposite = 4;
+
+
         // Misc
         const int k_MaxPyramidSize = 16;
-        readonly GraphicsFormat m_DefaultHDRFormat;
-        bool m_UseRGBM;
+        readonly GraphicsFormat m_DefaultColorFormat;   // The default format for post-processing, follows back-buffer format in URP.
+        bool m_DefaultColorFormatIsAlpha;
         readonly GraphicsFormat m_SMAAEdgeFormat;
         readonly GraphicsFormat m_GaussianCoCFormat;
 
@@ -120,25 +134,10 @@ namespace UnityEngine.Rendering.Universal
         /// <seealso cref="PostProcessParams"/>
         public PostProcessPass(RenderPassEvent evt, PostProcessData data, ref PostProcessParams postProcessParams)
         {
-            base.profilingSampler = new ProfilingSampler(nameof(PostProcessPass));
+            profilingSampler = new ProfilingSampler(nameof(PostProcessPass));
             renderPassEvent = evt;
             m_Data = data;
             m_Materials = new MaterialLibrary(data);
-
-            // Only two components are needed for edge render texture, but on some vendors four components may be faster.
-            if (SystemInfo.IsFormatSupported(GraphicsFormat.R8G8_UNorm, GraphicsFormatUsage.Render) && SystemInfo.graphicsDeviceVendor.ToLowerInvariant().Contains("arm"))
-                m_SMAAEdgeFormat = GraphicsFormat.R8G8_UNorm;
-            else
-                m_SMAAEdgeFormat = GraphicsFormat.R8G8B8A8_UNorm;
-
-            // UUM-41070: We require `Linear | Render` but with the deprecated FormatUsage this was checking `Blend`
-            // For now, we keep checking for `Blend` until the performance hit of doing the correct checks is evaluated
-            if (SystemInfo.IsFormatSupported(GraphicsFormat.R16_UNorm, GraphicsFormatUsage.Blend))
-                m_GaussianCoCFormat = GraphicsFormat.R16_UNorm;
-            else if (SystemInfo.IsFormatSupported(GraphicsFormat.R16_SFloat, GraphicsFormatUsage.Blend))
-                m_GaussianCoCFormat = GraphicsFormat.R16_SFloat;
-            else // Expect CoC banding
-                m_GaussianCoCFormat = GraphicsFormat.R8_UNorm;
 
             // Bloom pyramid shader ids - can't use a simple stackalloc in the bloom function as we
             // unfortunately need to allocate strings
@@ -164,27 +163,68 @@ namespace UnityEngine.Rendering.Universal
 
             m_BlitMaterial = postProcessParams.blitMaterial;
 
+            // NOTE: Request color format is the back-buffer color format. It can be HDR or SDR (when HDR disabled).
+            // Request color might have alpha or might not have alpha.
+            // The actual post-process target can be different. A RenderTexture with a custom format. Not necessarily a back-buffer.
+            // A RenderTexture with a custom format can have an alpha channel, regardless of the back-buffer setting,
+            // so the post-processing should just use the current target format/alpha to toggle alpha output.
+            //
+            // However, we want to filter out the alpha shader variants when not used (common case).
+            // The rule is that URP post-processing format follows the back-buffer format setting.
+
+            bool requestHDR = IsHDRFormat(postProcessParams.requestColorFormat);
+            bool requestAlpha = IsAlphaFormat(postProcessParams.requestColorFormat);
+
             // Texture format pre-lookup
             // UUM-41070: We require `Linear | Render` but with the deprecated FormatUsage this was checking `Blend`
             // For now, we keep checking for `Blend` until the performance hit of doing the correct checks is evaluated
-            const GraphicsFormatUsage usage = GraphicsFormatUsage.Blend;
-            if (SystemInfo.IsFormatSupported(postProcessParams.requestHDRFormat, usage))
+            if (requestHDR)
             {
-                m_DefaultHDRFormat = postProcessParams.requestHDRFormat;
-                m_UseRGBM = false;
+                m_DefaultColorFormatIsAlpha = requestAlpha;
+
+                const GraphicsFormatUsage usage = GraphicsFormatUsage.Blend;
+                if (SystemInfo.IsFormatSupported(postProcessParams.requestColorFormat, usage))    // Typically, RGBA16Float.
+                {
+                    m_DefaultColorFormat = postProcessParams.requestColorFormat;
+                }
+                else if (SystemInfo.IsFormatSupported(GraphicsFormat.B10G11R11_UFloatPack32, usage)) // HDR fallback
+                {
+                    // NOTE: Technically request format can be with alpha, however if it's not supported and we fall back here
+                    // , we assume no alpha. Post-process default format follows the back buffer format.
+                    // If support failed, it must have failed for back buffer too.
+                    m_DefaultColorFormat = GraphicsFormat.B10G11R11_UFloatPack32;
+                    m_DefaultColorFormatIsAlpha = false;
+                }
+                else
+                {
+                    m_DefaultColorFormat = QualitySettings.activeColorSpace == ColorSpace.Linear
+                        ? GraphicsFormat.R8G8B8A8_SRGB
+                        : GraphicsFormat.R8G8B8A8_UNorm;
+                }
             }
-            else if (SystemInfo.IsFormatSupported(GraphicsFormat.B10G11R11_UFloatPack32, usage)) // HDR fallback
+            else // SDR
             {
-                m_DefaultHDRFormat = GraphicsFormat.B10G11R11_UFloatPack32;
-                m_UseRGBM = false;
-            }
-            else
-            {
-                m_DefaultHDRFormat = QualitySettings.activeColorSpace == ColorSpace.Linear
+                m_DefaultColorFormat = QualitySettings.activeColorSpace == ColorSpace.Linear
                     ? GraphicsFormat.R8G8B8A8_SRGB
                     : GraphicsFormat.R8G8B8A8_UNorm;
-                m_UseRGBM = true;
+
+                m_DefaultColorFormatIsAlpha = true;
             }
+
+            // Only two components are needed for edge render texture, but on some vendors four components may be faster.
+            if (SystemInfo.IsFormatSupported(GraphicsFormat.R8G8_UNorm, GraphicsFormatUsage.Render) && SystemInfo.graphicsDeviceVendor.ToLowerInvariant().Contains("arm"))
+                m_SMAAEdgeFormat = GraphicsFormat.R8G8_UNorm;
+            else
+                m_SMAAEdgeFormat = GraphicsFormat.R8G8B8A8_UNorm;
+
+            // UUM-41070: We require `Linear | Render` but with the deprecated FormatUsage this was checking `Blend`
+            // For now, we keep checking for `Blend` until the performance hit of doing the correct checks is evaluated
+            if (SystemInfo.IsFormatSupported(GraphicsFormat.R16_UNorm, GraphicsFormatUsage.Blend))
+                m_GaussianCoCFormat = GraphicsFormat.R16_UNorm;
+            else if (SystemInfo.IsFormatSupported(GraphicsFormat.R16_SFloat, GraphicsFormatUsage.Blend))
+                m_GaussianCoCFormat = GraphicsFormat.R16_SFloat;
+            else // Expect CoC banding
+                m_GaussianCoCFormat = GraphicsFormat.R8_UNorm;
         }
 
         /// <summary>
@@ -219,6 +259,7 @@ namespace UnityEngine.Rendering.Universal
             m_StreakTmpTexture?.Release();
             m_StreakTmpTexture2?.Release();
             m_ScreenSpaceLensFlareResult?.Release();
+            m_UserLut?.Release();
         }
 
         /// <summary>
@@ -357,15 +398,27 @@ namespace UnityEngine.Rendering.Universal
             }
         }
 
+        bool IsHDRFormat(GraphicsFormat format)
+        {
+            return format == GraphicsFormat.B10G11R11_UFloatPack32 ||
+                   GraphicsFormatUtility.IsHalfFormat(format) ||
+                   GraphicsFormatUtility.IsFloatFormat(format);
+        }
+
+        bool IsAlphaFormat(GraphicsFormat format)
+        {
+            return GraphicsFormatUtility.HasAlphaChannel(format);
+        }
+
         RenderTextureDescriptor GetCompatibleDescriptor()
             => GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_Descriptor.graphicsFormat);
 
-        RenderTextureDescriptor GetCompatibleDescriptor(int width, int height, GraphicsFormat format, DepthBits depthBufferBits = DepthBits.None)
-            => GetCompatibleDescriptor(m_Descriptor, width, height, format, depthBufferBits);
+        RenderTextureDescriptor GetCompatibleDescriptor(int width, int height, GraphicsFormat format, GraphicsFormat depthStencilFormat = GraphicsFormat.None)
+            => GetCompatibleDescriptor(m_Descriptor, width, height, format, depthStencilFormat);
 
-        internal static RenderTextureDescriptor GetCompatibleDescriptor(RenderTextureDescriptor desc, int width, int height, GraphicsFormat format, DepthBits depthBufferBits = DepthBits.None)
+        internal static RenderTextureDescriptor GetCompatibleDescriptor(RenderTextureDescriptor desc, int width, int height, GraphicsFormat format, GraphicsFormat depthStencilFormat = GraphicsFormat.None)
         {
-            desc.depthBufferBits = (int)depthBufferBits;
+            desc.depthStencilFormat = depthStencilFormat;
             desc.msaaSamples = 1;
             desc.width = width;
             desc.height = height;
@@ -410,7 +463,7 @@ namespace UnityEngine.Rendering.Universal
             // disable useTemporalAA if another feature is disabled) then we need to put it in CameraData::IsTemporalAAEnabled() as opposed
             // to tweaking the value here.
             bool useTemporalAA = cameraData.IsTemporalAAEnabled();
-            if (cameraData.antialiasing == AntialiasingMode.TemporalAntiAliasing && !useTemporalAA)
+            if (cameraData.IsTemporalAARequested() && !useTemporalAA)
                 TemporalAA.ValidateAndWarn(cameraData);
 
             int amountOfPassesRemaining = (useStopNan ? 1 : 0) + (useSubPixeMorpAA ? 1 : 0) + (useDepthOfField ? 1 : 0) + (useLensFlare ? 1 : 0) + (useTemporalAA ? 1 : 0) + (useMotionBlur ? 1 : 0) + (usePaniniProjection ? 1 : 0);
@@ -434,13 +487,13 @@ namespace UnityEngine.Rendering.Universal
             {
                 if (destination == null)
                 {
-                    RenderingUtils.ReAllocateIfNeeded(ref m_TempTarget, GetCompatibleDescriptor(), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_TempTarget");
+                    RenderingUtils.ReAllocateHandleIfNeeded(ref m_TempTarget, GetCompatibleDescriptor(), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_TempTarget");
                     destination = m_TempTarget;
                 }
                 else if (destination == m_Source && m_Descriptor.msaaSamples > 1)
                 {
                     // Avoid using m_Source.id as new destination, it may come with a depth buffer that we don't want, may have MSAA that we don't want etc
-                    RenderingUtils.ReAllocateIfNeeded(ref m_TempTarget2, GetCompatibleDescriptor(), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_TempTarget2");
+                    RenderingUtils.ReAllocateHandleIfNeeded(ref m_TempTarget2, GetCompatibleDescriptor(), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_TempTarget2");
                     destination = m_TempTarget2;
                 }
                 return destination;
@@ -508,7 +561,7 @@ namespace UnityEngine.Rendering.Universal
 
                 using (new ProfilingScope(cmd, ProfilingSampler.Get(markerName)))
                 {
-                    DoDepthOfField(cameraData.camera, cmd, GetSource(), GetDestination(), cameraData.pixelRect);
+                    DoDepthOfField(ref renderingData.cameraData, cmd, GetSource(), GetDestination(), cameraData.pixelRect);
                     Swap(ref renderer);
                 }
             }
@@ -561,7 +614,7 @@ namespace UnityEngine.Rendering.Universal
                 if (bloomActive || lensFlareScreenSpaceActive)
                 {
                     using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.Bloom)))
-                        SetupBloom(cmd, GetSource(), m_Materials.uber);
+                        SetupBloom(cmd, GetSource(), m_Materials.uber, cameraData.isAlphaOutputEnabled);
                 }
 
                 // Lens Flare Screen Space
@@ -623,13 +676,15 @@ namespace UnityEngine.Rendering.Universal
                     // Color space conversion is already applied through color grading, do encoding if uber post is the last pass
                     // Otherwise encoding will happen in the final post process pass or the final blit pass
                     HDROutputUtils.Operation hdrOperation = !m_HasFinalPass && m_EnableColorEncodingIfNeeded ? HDROutputUtils.Operation.ColorEncoding : HDROutputUtils.Operation.None;
-                    SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, m_Materials.uber, hdrOperation);
+                    SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, m_Materials.uber, hdrOperation, cameraData.rendersOverlayUI);
                 }
 
                 if (m_UseFastSRGBLinearConversion)
                 {
                     m_Materials.uber.EnableKeyword(ShaderKeywordStrings.UseFastSRGBLinearConversion);
                 }
+
+                CoreUtils.SetKeyword(m_Materials.uber, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, cameraData.isAlphaOutputEnabled);
 
                 DebugHandler debugHandler = GetActiveDebugHandler(cameraData);
                 bool resolveToDebugScreen = debugHandler != null && debugHandler.WriteToDebugScreenTexture(cameraData.resolveFinalTarget);
@@ -667,6 +722,7 @@ namespace UnityEngine.Rendering.Universal
                         destination = renderer.GetCameraColorFrontBuffer(cmd);
                         #pragma warning restore CS0618
                     }
+
                     Blitter.BlitCameraTexture(cmd, GetSource(), destination, colorLoadAction, RenderBufferStoreAction.Store, m_Materials.uber, 0);
                     // Disable obsolete warning for internal usage
                     #pragma warning disable CS0618
@@ -715,25 +771,13 @@ namespace UnityEngine.Rendering.Universal
 
         void DoSubpixelMorphologicalAntialiasing(ref CameraData cameraData, CommandBuffer cmd, RTHandle source, RTHandle destination)
         {
-            var camera = cameraData.camera;
             var pixelRect = new Rect(Vector2.zero, new Vector2(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height));
             var material = m_Materials.subpixelMorphologicalAntialiasing;
             const int kStencilBit = 64;
 
-            // Intermediate targets
-            RTHandle stencil; // We would only need stencil, no depth. But Unity doesn't support that.
-            if (m_Depth.nameID == BuiltinRenderTextureType.CameraTarget || m_Descriptor.msaaSamples > 1)
-            {
-                // In case m_Depth is CameraTarget it may refer to the backbuffer and we can't use that as an attachment on all platforms
-                RenderingUtils.ReAllocateIfNeeded(ref m_EdgeStencilTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.None, DepthBits.Depth24), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_EdgeStencilTexture");
-                stencil = m_EdgeStencilTexture;
-            }
-            else
-            {
-                stencil = m_Depth;
-            }
-            RenderingUtils.ReAllocateIfNeeded(ref m_EdgeColorTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_SMAAEdgeFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_EdgeColorTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_BlendTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.R8G8B8A8_UNorm), FilterMode.Point, TextureWrapMode.Clamp, name: "_BlendTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_EdgeStencilTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.None, GraphicsFormatUtility.GetDepthStencilFormat(24)), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_EdgeStencilTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_EdgeColorTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_SMAAEdgeFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_EdgeColorTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_BlendTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.R8G8B8A8_UNorm), FilterMode.Point, TextureWrapMode.Clamp, name: "_BlendTexture");
 
             // Globals
             var targetSize = m_EdgeColorTexture.useScaling ? m_EdgeColorTexture.rtHandleProperties.currentRenderTargetSize : new Vector2Int(m_EdgeColorTexture.rt.width, m_EdgeColorTexture.rt.height);
@@ -762,14 +806,14 @@ namespace UnityEngine.Rendering.Universal
             // Pass 1: Edge detection
             RenderingUtils.Blit(cmd, source, pixelRect,
                 m_EdgeColorTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
-                stencil, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
+                m_EdgeStencilTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
                 ClearFlag.ColorStencil, Color.clear,  // implicit depth=1.0f stencil=0x0
                 material, 0);
 
             // Pass 2: Blend weights
             RenderingUtils.Blit(cmd, m_EdgeColorTexture, pixelRect,
                 m_BlendTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store,
-                stencil, RenderBufferLoadAction.Load, RenderBufferStoreAction.DontCare,
+                m_EdgeStencilTexture, RenderBufferLoadAction.Load, RenderBufferStoreAction.DontCare,
                 ClearFlag.Color, Color.clear, material, 1);
 
             // Pass 3: Neighborhood blending
@@ -783,15 +827,15 @@ namespace UnityEngine.Rendering.Universal
 
         // TODO: CoC reprojection once TAA gets in LW
         // TODO: Proper LDR/gamma support
-        void DoDepthOfField(Camera camera, CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect)
+        void DoDepthOfField(ref CameraData cameraData, CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect)
         {
             if (m_DepthOfField.mode.value == DepthOfFieldMode.Gaussian)
-                DoGaussianDepthOfField(camera, cmd, source, destination, pixelRect);
+                DoGaussianDepthOfField(cmd, source, destination, pixelRect, cameraData.isAlphaOutputEnabled);
             else if (m_DepthOfField.mode.value == DepthOfFieldMode.Bokeh)
-                DoBokehDepthOfField(cmd, source, destination, pixelRect);
+                DoBokehDepthOfField(cmd, source, destination, pixelRect, cameraData.isAlphaOutputEnabled);
         }
 
-        void DoGaussianDepthOfField(Camera camera, CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect)
+        void DoGaussianDepthOfField(CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect, bool enableAlphaOutput)
         {
             int downSample = 2;
             var material = m_Materials.gaussianDepthOfField;
@@ -806,19 +850,20 @@ namespace UnityEngine.Rendering.Universal
             float maxRadius = m_DepthOfField.gaussianMaxRadius.value * (wh / 1080f);
             maxRadius = Mathf.Min(maxRadius, 2f);
 
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, enableAlphaOutput);
             CoreUtils.SetKeyword(material, ShaderKeywordStrings.HighQualitySampling, m_DepthOfField.highQualitySampling.value);
             material.SetVector(ShaderConstants._CoCParams, new Vector3(farStart, farEnd, maxRadius));
 
-            RenderingUtils.ReAllocateIfNeeded(ref m_FullCoCTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_GaussianCoCFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_FullCoCTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_HalfCoCTexture, GetCompatibleDescriptor(wh, hh, m_GaussianCoCFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_HalfCoCTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_PingTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PingTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_PongTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PongTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_FullCoCTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, m_GaussianCoCFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_FullCoCTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_HalfCoCTexture, GetCompatibleDescriptor(wh, hh, m_GaussianCoCFormat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_HalfCoCTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_PingTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PingTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_PongTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PongTexture");
 
             PostProcessUtils.SetSourceSize(cmd, m_FullCoCTexture);
             cmd.SetGlobalVector(ShaderConstants._DownSampleScaleFactor, new Vector4(1.0f / downSample, 1.0f / downSample, downSample, downSample));
 
             // Compute CoC
-            Blitter.BlitCameraTexture(cmd, source, m_FullCoCTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 0);
+            Blitter.BlitCameraTexture(cmd, source, m_FullCoCTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_GaussianDoFPassComputeCoc);
 
             // Downscale & prefilter color + coc
             m_MRT2[0] = m_HalfCoCTexture.nameID;
@@ -827,18 +872,18 @@ namespace UnityEngine.Rendering.Universal
             cmd.SetGlobalTexture(ShaderConstants._FullCoCTexture, m_FullCoCTexture.nameID);
             CoreUtils.SetRenderTarget(cmd, m_MRT2, m_HalfCoCTexture);
             Vector2 viewportScale = source.useScaling ? new Vector2(source.rtHandleProperties.rtHandleScale.x, source.rtHandleProperties.rtHandleScale.y) : Vector2.one;
-            Blitter.BlitTexture(cmd, source, viewportScale, material, 1);
+            Blitter.BlitTexture(cmd, source, viewportScale, material, k_GaussianDoFPassDownscalePrefilter);
 
             // Blur
             cmd.SetGlobalTexture(ShaderConstants._HalfCoCTexture, m_HalfCoCTexture.nameID);
             cmd.SetGlobalTexture(ShaderConstants._ColorTexture, source);
-            Blitter.BlitCameraTexture(cmd, m_PingTexture, m_PongTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 2);
-            Blitter.BlitCameraTexture(cmd, m_PongTexture, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 3);
+            Blitter.BlitCameraTexture(cmd, m_PingTexture, m_PongTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_GaussianDoFPassBlurH);
+            Blitter.BlitCameraTexture(cmd, m_PongTexture, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_GaussianDoFPassBlurV);
 
             // Composite
             cmd.SetGlobalTexture(ShaderConstants._ColorTexture, m_PingTexture.nameID);
             cmd.SetGlobalTexture(ShaderConstants._FullCoCTexture, m_FullCoCTexture.nameID);
-            Blitter.BlitCameraTexture(cmd, source, destination, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 4);
+            Blitter.BlitCameraTexture(cmd, source, destination, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_GaussianDoFPassComposite);
         }
 
         void PrepareBokehKernel(float maxRadius, float rcpAspect)
@@ -898,7 +943,7 @@ namespace UnityEngine.Rendering.Universal
             return Mathf.Min(0.05f, kRadiusInPixels / viewportHeight);
         }
 
-        void DoBokehDepthOfField(CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect)
+        void DoBokehDepthOfField(CommandBuffer cmd, RTHandle source, RTHandle destination, Rect pixelRect, bool enableAlphaOutput)
         {
             int downSample = 2;
             var material = m_Materials.bokehDepthOfField;
@@ -913,6 +958,7 @@ namespace UnityEngine.Rendering.Universal
             float maxRadius = GetMaxBokehRadiusInPixels(m_Descriptor.height);
             float rcpAspect = 1f / (wh / (float)hh);
 
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, enableAlphaOutput);
             CoreUtils.SetKeyword(material, ShaderKeywordStrings.UseFastSRGBLinearConversion, m_UseFastSRGBLinearConversion);
             cmd.SetGlobalVector(ShaderConstants._CoCParams, new Vector4(P, maxCoC, maxRadius, rcpAspect));
 
@@ -928,9 +974,9 @@ namespace UnityEngine.Rendering.Universal
 
             cmd.SetGlobalVectorArray(ShaderConstants._BokehKernel, m_BokehKernel);
 
-            RenderingUtils.ReAllocateIfNeeded(ref m_FullCoCTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.R8_UNorm), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_FullCoCTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_PingTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PingTexture");
-            RenderingUtils.ReAllocateIfNeeded(ref m_PongTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PongTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_FullCoCTexture, GetCompatibleDescriptor(m_Descriptor.width, m_Descriptor.height, GraphicsFormat.R8_UNorm), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_FullCoCTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_PingTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PingTexture");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_PongTexture, GetCompatibleDescriptor(wh, hh, GraphicsFormat.R16G16B16A16_SFloat), FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_PongTexture");
 
             PostProcessUtils.SetSourceSize(cmd, m_FullCoCTexture);
             cmd.SetGlobalVector(ShaderConstants._DownSampleScaleFactor, new Vector4(1.0f / downSample, 1.0f / downSample, downSample, downSample));
@@ -938,21 +984,21 @@ namespace UnityEngine.Rendering.Universal
             cmd.SetGlobalVector(ShaderConstants._BokehConstants, new Vector4(uvMargin, uvMargin * 2.0f));
 
             // Compute CoC
-            Blitter.BlitCameraTexture(cmd, source, m_FullCoCTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 0);
+            Blitter.BlitCameraTexture(cmd, source, m_FullCoCTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_BokehDoFPassComputeCoc);
             cmd.SetGlobalTexture(ShaderConstants._FullCoCTexture, m_FullCoCTexture.nameID);
 
             // Downscale & prefilter color + coc
-            Blitter.BlitCameraTexture(cmd, source, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 1);
+            Blitter.BlitCameraTexture(cmd, source, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_BokehDoFPassDownscalePrefilter);
 
             // Bokeh blur
-            Blitter.BlitCameraTexture(cmd, m_PingTexture, m_PongTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 2);
+            Blitter.BlitCameraTexture(cmd, m_PingTexture, m_PongTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_BokehDoFPassBlur);
 
             // Post-filtering
-            Blitter.BlitCameraTexture(cmd, m_PongTexture, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 3);
+            Blitter.BlitCameraTexture(cmd, m_PongTexture, m_PingTexture, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_BokehDoFPassPostFilter);
 
             // Composite
             cmd.SetGlobalTexture(ShaderConstants._DofTexture, m_PingTexture.nameID);
-            Blitter.BlitCameraTexture(cmd, source, destination, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, 4);
+            Blitter.BlitCameraTexture(cmd, source, destination, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, k_BokehDoFPassComposite);
         }
 
         #endregion
@@ -1025,7 +1071,7 @@ namespace UnityEngine.Rendering.Universal
                 camera.transform.position,
                 nonJitteredViewProjMatrix0,
                 cmd,
-                false, false, null, null, null);
+                false, false, null, null);
 
 #if ENABLE_VR && ENABLE_XR_MODULE
             if (cameraData.xr.enabled && cameraData.xr.singlePassEnabled)
@@ -1044,7 +1090,7 @@ namespace UnityEngine.Rendering.Universal
                         camera.transform.position,
                         gpuVPXR,
                         cmd,
-                        false, false, null, null, null);
+                        false, false, null, null);
                 }
             }
 #endif
@@ -1053,6 +1099,7 @@ namespace UnityEngine.Rendering.Universal
         void LensFlareDataDriven(ref UniversalCameraData cameraData, CommandBuffer cmd, RenderTargetIdentifier source, bool usePanini, float paniniDistance, float paniniCropToFit)
         {
             Camera camera = cameraData.camera;
+            var pixelRect = new Rect(Vector2.zero, new Vector2(m_Descriptor.width, m_Descriptor.height));
 
 #if ENABLE_VR && ENABLE_XR_MODULE
             // Not VR or Multi-Pass
@@ -1064,7 +1111,7 @@ namespace UnityEngine.Rendering.Universal
                 var gpuVP = gpuNonJitteredProj * camera.worldToCameraMatrix;
 
                 LensFlareCommonSRP.DoLensFlareDataDrivenCommon(
-                    m_Materials.lensFlareDataDriven, camera, camera.pixelRect, cameraData.xr, cameraData.xr.multipassId,
+                    m_Materials.lensFlareDataDriven, camera, pixelRect, cameraData.xr, cameraData.xr.multipassId,
                     (float)m_Descriptor.width, (float)m_Descriptor.height,
                     usePanini, paniniDistance, paniniCropToFit, true,
                     camera.transform.position,
@@ -1084,7 +1131,7 @@ namespace UnityEngine.Rendering.Universal
                     Matrix4x4 gpuVPXR = GL.GetGPUProjectionMatrix(cameraData.GetProjectionMatrixNoJitter(xrIdx), true) * cameraData.GetViewMatrix(xrIdx);
 
                     LensFlareCommonSRP.DoLensFlareDataDrivenCommon(
-                    m_Materials.lensFlareDataDriven, camera, camera.pixelRect, cameraData.xr, cameraData.xr.multipassId,
+                    m_Materials.lensFlareDataDriven, camera, pixelRect, cameraData.xr, cameraData.xr.multipassId,
                     (float)m_Descriptor.width, (float)m_Descriptor.height,
                     usePanini, paniniDistance, paniniCropToFit, true,
                     camera.transform.position,
@@ -1109,15 +1156,15 @@ namespace UnityEngine.Rendering.Universal
 
             int width = Mathf.Max(1, (int)m_Descriptor.width / ratio);
             int height = Mathf.Max(1, (int)m_Descriptor.height / ratio);
-            var desc = GetCompatibleDescriptor(width, height, m_DefaultHDRFormat);
+            var desc = GetCompatibleDescriptor(width, height, m_DefaultColorFormat);
 
             if (m_LensFlareScreenSpace.IsStreaksActive())
             {
-                RenderingUtils.ReAllocateIfNeeded(ref m_StreakTmpTexture, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_StreakTmpTexture");
-                RenderingUtils.ReAllocateIfNeeded(ref m_StreakTmpTexture2, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_StreakTmpTexture2");
+                RenderingUtils.ReAllocateHandleIfNeeded(ref m_StreakTmpTexture, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_StreakTmpTexture");
+                RenderingUtils.ReAllocateHandleIfNeeded(ref m_StreakTmpTexture2, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_StreakTmpTexture2");
             }
 
-            RenderingUtils.ReAllocateIfNeeded(ref m_ScreenSpaceLensFlareResult, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_ScreenSpaceLensFlareResult");
+            RenderingUtils.ReAllocateHandleIfNeeded(ref m_ScreenSpaceLensFlareResult, desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: "_ScreenSpaceLensFlareResult");
 
             LensFlareCommonSRP.DoLensFlareScreenSpaceCommon(
                 m_Materials.lensFlareScreenSpace,
@@ -1223,6 +1270,7 @@ namespace UnityEngine.Rendering.Universal
 
             PostProcessUtils.SetSourceSize(cmd, source);
 
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, cameraData.isAlphaOutputEnabled);
             Blitter.BlitCameraTexture(cmd, source, destination, RenderBufferLoadAction.DontCare, RenderBufferStoreAction.Store, material, pass);
         }
 
@@ -1304,7 +1352,7 @@ namespace UnityEngine.Rendering.Universal
 
 #region Bloom
 
-        void SetupBloom(CommandBuffer cmd, RTHandle source, Material uberMaterial)
+        void SetupBloom(CommandBuffer cmd, RTHandle source, Material uberMaterial, bool enableAlphaOutput)
         {
             // Start at half-res
             int downres = 1;
@@ -1337,14 +1385,14 @@ namespace UnityEngine.Rendering.Universal
             var bloomMaterial = m_Materials.bloom;
             bloomMaterial.SetVector(ShaderConstants._Params, new Vector4(scatter, clamp, threshold, thresholdKnee));
             CoreUtils.SetKeyword(bloomMaterial, ShaderKeywordStrings.BloomHQ, m_Bloom.highQualityFiltering.value);
-            CoreUtils.SetKeyword(bloomMaterial, ShaderKeywordStrings.UseRGBM, m_UseRGBM);
+            CoreUtils.SetKeyword(bloomMaterial, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, enableAlphaOutput);
 
             // Prefilter
-            var desc = GetCompatibleDescriptor(tw, th, m_DefaultHDRFormat);
+            var desc = GetCompatibleDescriptor(tw, th, m_DefaultColorFormat);
             for (int i = 0; i < mipCount; i++)
             {
-                RenderingUtils.ReAllocateIfNeeded(ref m_BloomMipUp[i], desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: m_BloomMipUp[i].name);
-                RenderingUtils.ReAllocateIfNeeded(ref m_BloomMipDown[i], desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: m_BloomMipDown[i].name);
+                RenderingUtils.ReAllocateHandleIfNeeded(ref m_BloomMipUp[i], desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: m_BloomMipUp[i].name);
+                RenderingUtils.ReAllocateHandleIfNeeded(ref m_BloomMipDown[i], desc, FilterMode.Bilinear, TextureWrapMode.Clamp, name: m_BloomMipDown[i].name);
                 desc.width = Mathf.Max(1, desc.width >> 1);
                 desc.height = Mathf.Max(1, desc.height >> 1);
             }
@@ -1382,7 +1430,6 @@ namespace UnityEngine.Rendering.Universal
 
             var bloomParams = new Vector4(m_Bloom.intensity.value, tint.r, tint.g, tint.b);
             uberMaterial.SetVector(ShaderConstants._Bloom_Params, bloomParams);
-            uberMaterial.SetFloat(ShaderConstants._Bloom_RGBM, m_UseRGBM ? 1f : 0f);
 
             cmd.SetGlobalTexture(ShaderConstants._Bloom_Texture, m_BloomMipUp[0]);
 
@@ -1574,13 +1621,14 @@ namespace UnityEngine.Rendering.Universal
         #endregion
 
 #region HDR Output
-        void SetupHDROutput(HDROutputUtils.HDRDisplayInformation hdrDisplayInformation, ColorGamut hdrDisplayColorGamut, Material material, HDROutputUtils.Operation hdrOperations)
+        void SetupHDROutput(HDROutputUtils.HDRDisplayInformation hdrDisplayInformation, ColorGamut hdrDisplayColorGamut, Material material, HDROutputUtils.Operation hdrOperations, bool rendersOverlayUI)
         {
             Vector4 hdrOutputLuminanceParams;
             UniversalRenderPipeline.GetHDROutputLuminanceParameters(hdrDisplayInformation, hdrDisplayColorGamut, m_Tonemapping, out hdrOutputLuminanceParams);
             material.SetVector(ShaderPropertyId.hdrOutputLuminanceParams, hdrOutputLuminanceParams);
 
             HDROutputUtils.ConfigureHDROutput(material, hdrDisplayColorGamut, hdrOperations);
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings.HDROverlay, rendersOverlayUI);
         }
 #endregion
 
@@ -1613,8 +1661,10 @@ namespace UnityEngine.Rendering.Universal
                 if (!cameraData.postProcessEnabled)
                     hdrOperations |= HDROutputUtils.Operation.ColorConversion;
 
-                SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, material, hdrOperations);
+                SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, material, hdrOperations, cameraData.rendersOverlayUI);
             }
+
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, cameraData.isAlphaOutputEnabled);
 
             DebugHandler debugHandler = GetActiveDebugHandler(cameraData);
             bool resolveToDebugScreen = debugHandler != null && debugHandler.WriteToDebugScreenTexture(cameraData.resolveFinalTarget);
@@ -1642,6 +1692,9 @@ namespace UnityEngine.Rendering.Universal
             // If FSR is enabled then FSR settings override the TAA settings and we perform RCAS only once.
             bool isTaaSharpeningEnabled = (cameraData.IsTemporalAAEnabled() && cameraData.taaSettings.contrastAdaptiveSharpening > 0.0f) && !isFsrEnabled;
 
+            // If target format has alpha and post-process needs to process/output alpha.
+            bool isAlphaOutputEnabled = cameraData.isAlphaOutputEnabled;
+
             if (cameraData.imageScalingMode != ImageScalingMode.None)
             {
                 // When FXAA is enabled in scaled renders, we execute it in a separate blit since it's not designed to be used in
@@ -1656,7 +1709,7 @@ namespace UnityEngine.Rendering.Universal
                 // Make sure to remove any MSAA and attached depth buffers from the temporary render targets
                 var tempRtDesc = cameraData.cameraTargetDescriptor;
                 tempRtDesc.msaaSamples = 1;
-                tempRtDesc.depthBufferBits = 0;
+                tempRtDesc.depthStencilFormat = GraphicsFormat.None;
 
                 // Select a UNORM format since we've already performed tonemapping. (Values are in 0-1 range)
                 // This improves precision and is required if we want to avoid excessive banding when FSR is in use.
@@ -1669,7 +1722,7 @@ namespace UnityEngine.Rendering.Universal
                 {
                     if (requireHDROutput)
                     {
-                        SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, m_Materials.scalingSetup, hdrOperations);
+                        SetupHDROutput(cameraData.hdrDisplayInformation, cameraData.hdrDisplayColorGamut, m_Materials.scalingSetup, hdrOperations, cameraData.rendersOverlayUI);
                     }
 
                     if (isFxaaEnabled)
@@ -1682,7 +1735,12 @@ namespace UnityEngine.Rendering.Universal
                         m_Materials.scalingSetup.EnableKeyword(hdrOperations.HasFlag(HDROutputUtils.Operation.ColorEncoding) ? ShaderKeywordStrings.Gamma20AndHDRInput : ShaderKeywordStrings.Gamma20);
                     }
 
-                    RenderingUtils.ReAllocateIfNeeded(ref m_ScalingSetupTarget, tempRtDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_ScalingSetupTexture");
+                    if (isAlphaOutputEnabled)
+                    {
+                        m_Materials.scalingSetup.EnableKeyword(ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT);
+                    }
+
+                    RenderingUtils.ReAllocateHandleIfNeeded(ref m_ScalingSetupTarget, tempRtDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_ScalingSetupTexture");
                     Blitter.BlitCameraTexture(cmd, m_Source, m_ScalingSetupTarget, colorLoadAction, RenderBufferStoreAction.Store, m_Materials.scalingSetup, 0);
 
                     sourceTex = m_ScalingSetupTarget;
@@ -1716,12 +1774,14 @@ namespace UnityEngine.Rendering.Universal
                             {
                                 m_Materials.easu.shaderKeywords = null;
 
-                                var upscaleRtDesc = tempRtDesc;
+                                var upscaleRtDesc = cameraData.cameraTargetDescriptor;
+                                upscaleRtDesc.msaaSamples = 1;
+                                upscaleRtDesc.depthStencilFormat = GraphicsFormat.None;
                                 upscaleRtDesc.width = cameraData.pixelWidth;
                                 upscaleRtDesc.height = cameraData.pixelHeight;
 
                                 // EASU
-                                RenderingUtils.ReAllocateIfNeeded(ref m_UpscaledTarget, upscaleRtDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_UpscaledTexture");
+                                RenderingUtils.ReAllocateHandleIfNeeded(ref m_UpscaledTarget, upscaleRtDesc, FilterMode.Point, TextureWrapMode.Clamp, name: "_UpscaledTexture");
                                 var fsrInputSize = new Vector2(cameraData.cameraTargetDescriptor.width, cameraData.cameraTargetDescriptor.height);
                                 var fsrOutputSize = new Vector2(cameraData.pixelWidth, cameraData.pixelHeight);
                                 FSRUtils.SetEasuConstants(cmd, fsrInputSize, fsrInputSize, fsrOutputSize);
@@ -1806,7 +1866,9 @@ namespace UnityEngine.Rendering.Universal
             public readonly Material stopNaN;
             public readonly Material subpixelMorphologicalAntialiasing;
             public readonly Material gaussianDepthOfField;
+            public readonly Material gaussianDepthOfFieldCoC;
             public readonly Material bokehDepthOfField;
+            public readonly Material bokehDepthOfFieldCoC;
             public readonly Material cameraMotionBlur;
             public readonly Material paniniProjection;
             public readonly Material bloom;
@@ -1828,7 +1890,9 @@ namespace UnityEngine.Rendering.Universal
                 stopNaN = Load(data.shaders.stopNanPS);
                 subpixelMorphologicalAntialiasing = Load(data.shaders.subpixelMorphologicalAntialiasingPS);
                 gaussianDepthOfField = Load(data.shaders.gaussianDepthOfFieldPS);
+                gaussianDepthOfFieldCoC = Load(data.shaders.gaussianDepthOfFieldPS);
                 bokehDepthOfField = Load(data.shaders.bokehDepthOfFieldPS);
+                bokehDepthOfFieldCoC = Load(data.shaders.bokehDepthOfFieldPS);
                 cameraMotionBlur = Load(data.shaders.cameraMotionBlurPS);
                 paniniProjection = Load(data.shaders.paniniProjectionPS);
                 bloom = Load(data.shaders.bloomPS);
@@ -1849,7 +1913,7 @@ namespace UnityEngine.Rendering.Universal
             {
                 if (shader == null)
                 {
-                    Debug.LogErrorFormat($"Missing shader. {GetType().DeclaringType.Name} render pass will not execute. Check for missing reference in the renderer resources.");
+                    Debug.LogErrorFormat($"Missing shader. PostProcessing render passes will not execute. Check for missing reference in the renderer resources.");
                     return null;
                 }
                 else if (!shader.isSupported)
@@ -1865,7 +1929,9 @@ namespace UnityEngine.Rendering.Universal
                 CoreUtils.Destroy(stopNaN);
                 CoreUtils.Destroy(subpixelMorphologicalAntialiasing);
                 CoreUtils.Destroy(gaussianDepthOfField);
+                CoreUtils.Destroy(gaussianDepthOfFieldCoC);
                 CoreUtils.Destroy(bokehDepthOfField);
+                CoreUtils.Destroy(bokehDepthOfFieldCoC);
                 CoreUtils.Destroy(cameraMotionBlur);
                 CoreUtils.Destroy(paniniProjection);
                 CoreUtils.Destroy(bloom);
@@ -1910,7 +1976,6 @@ namespace UnityEngine.Rendering.Universal
             public static readonly int _Params = Shader.PropertyToID("_Params");
             public static readonly int _SourceTexLowMip = Shader.PropertyToID("_SourceTexLowMip");
             public static readonly int _Bloom_Params = Shader.PropertyToID("_Bloom_Params");
-            public static readonly int _Bloom_RGBM = Shader.PropertyToID("_Bloom_RGBM");
             public static readonly int _Bloom_Texture = Shader.PropertyToID("_Bloom_Texture");
             public static readonly int _LensDirt_Texture = Shader.PropertyToID("_LensDirt_Texture");
             public static readonly int _LensDirt_Params = Shader.PropertyToID("_LensDirt_Params");

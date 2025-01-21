@@ -145,6 +145,20 @@ namespace UnityEngine.Rendering.Universal
         /// </summary>
         public Camera camera;
 
+        /// <summary>
+        /// Returns the scaled width of the Camera
+        /// By obtaining the pixelWidth of the camera and taking into account the render scale
+        /// The min dimension is 1.
+        /// </summary>
+        public int scaledWidth => Mathf.Max(1, (int)(camera.pixelWidth * renderScale));
+
+        /// <summary>
+        /// Returns the scaled height of the Camera
+        /// By obtaining the pixelHeight of the camera and taking into account the render scale
+        /// The min dimension is 1.
+        /// </summary>
+        public int scaledHeight => Mathf.Max(1, (int)(camera.pixelHeight * renderScale));
+
 
         // NOTE: This is internal instead of private to allow ref return in the old CameraData compatibility property.
         // We can make this private when it is removed.
@@ -221,6 +235,11 @@ namespace UnityEngine.Rendering.Universal
         public bool allowHDROutput;
 
         /// <summary>
+        /// True if this camera can write the alpha channel. Post-processing uses this. Requires the color target to have an alpha channel.
+        /// </summary>
+        public bool isAlphaOutputEnabled;
+
+        /// <summary>
         /// True if this camera requires to write _CameraDepthTexture.
         /// </summary>
         public bool requiresDepthTexture;
@@ -256,6 +275,11 @@ namespace UnityEngine.Rendering.Universal
                 return targetTexture == null && Display.main.requiresSrgbBlitToBackbuffer;
             }
         }
+
+        /// <summary>
+        /// True if the camera rendering is for regular in-game.
+        /// </summary>
+        public bool isGameCamera => cameraType == CameraType.Game;
 
         /// <summary>
         /// True if the camera rendering is for the scene window in the editor.
@@ -418,14 +442,30 @@ namespace UnityEngine.Rendering.Universal
             return targetTexture != null || IsHandleYFlipped(color ?? depth);
         }
 
+        /// <summary>
+        /// Returns true if temporal anti-aliasing has been requested
+        /// Use IsTemporalAAEnabled() to ensure that TAA is active at runtime
+        /// </summary>
+        /// <returns>True if TAA is requested</returns>
+        internal bool IsTemporalAARequested()
+        {
+            return antialiasing == AntialiasingMode.TemporalAntiAliasing;
+        }
+
+        /// <summary>
+        /// Returns true if the pipeline and the given camera are configured to render with temporal anti-aliasing post processing enabled
+        ///
+        /// Once selected, TAA necessitates some pre-requisites from the pipeline to run, mostly from the camera itself.
+        /// </summary>
+        /// <returns>True if TAA is enabled</returns>
         internal bool IsTemporalAAEnabled()
         {
             UniversalAdditionalCameraData additionalCameraData;
             camera.TryGetComponent(out additionalCameraData);
 
-            return (antialiasing == AntialiasingMode.TemporalAntiAliasing)                                                            // Enabled
+            return IsTemporalAARequested()                                                                                            // Requested
                    && postProcessEnabled                                                                                              // Postprocessing Enabled
-                   && (taaPersistentData != null)                                                                                     // Initialized
+                   && (taaHistory != null)                                                                                            // Initialized
                    && (cameraTargetDescriptor.msaaSamples == 1)                                                                       // No MSAA
                    && !(additionalCameraData?.renderType == CameraRenderType.Overlay || additionalCameraData?.cameraStack.Count > 0)  // No Camera stack
                    && !camera.allowDynamicResolution                                                                                  // No Dynamic Resolution
@@ -433,17 +473,27 @@ namespace UnityEngine.Rendering.Universal
         }
 
         /// <summary>
-        /// Returns true if the pipeline is configured to render with the STP upscaler
+        /// Returns true if the STP upscaler has been requested
+        /// Use IsSTPEnabled() to ensure that STP upscaler is active at runtime, it necessitates TAA pre-processing
+        /// </summary>
+        /// <returns>True if STP is requested</returns>
+        internal bool IsSTPRequested()
+        {
+            return (imageScalingMode == ImageScalingMode.Upscaling) && (upscalingFilter == ImageUpscalingFilter.STP);
+        }
+
+        /// <summary>
+        /// Returns true if the pipeline and the given camera are configured to render with the STP upscaler
         ///
         /// When STP runs, it relies on much of the existing TAA infrastructure provided by URP's native TAA. Due to this, URP forces the anti-aliasing mode to
-        /// TAA when STP is enabled to ensure that most TAA logic remains active. A side effect of this behavior is that STP inherits all of the same configuration
+        /// TAA when STP is requested to ensure that most TAA logic remains active. A side effect of this behavior is that STP inherits all of the same configuration
         /// restrictions as TAA and effectively cannot run if IsTemporalAAEnabled() returns false. The post processing pass logic that executes STP handles this
         /// situation and STP should behave identically to TAA in cases where TAA support requirements aren't met at runtime.
         /// </summary>
         /// <returns>True if STP is enabled</returns>
         internal bool IsSTPEnabled()
         {
-            return (imageScalingMode == ImageScalingMode.Upscaling) && (upscalingFilter == ImageUpscalingFilter.STP);
+            return IsSTPRequested() && IsTemporalAAEnabled();
         }
 
         /// <summary>
@@ -546,7 +596,7 @@ namespace UnityEngine.Rendering.Universal
         /// <summary>
         /// Persistent TAA data, primarily for the accumulation texture.
         /// </summary>
-        internal TemporalAA.PersistentData taaPersistentData;
+        internal TaaHistory taaHistory;
 
         /// <summary>
         /// The STP history data. It contains both persistent state and textures.
@@ -599,6 +649,7 @@ namespace UnityEngine.Rendering.Universal
             isDefaultViewport = false;
             isHdrEnabled = false;
             allowHDROutput = false;
+            isAlphaOutputEnabled = false;
             requiresDepthTexture = false;
             requiresOpaqueTexture = false;
             postProcessingRequiresDepthTexture = false;
@@ -619,7 +670,7 @@ namespace UnityEngine.Rendering.Universal
             resolveFinalTarget = false;
             worldSpaceCameraPos = default;
             backgroundColor = Color.black;
-            taaPersistentData = null;
+            taaHistory = null;
             stpHistory = null;
             taaSettings = default;
             baseCamera = null;

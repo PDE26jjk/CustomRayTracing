@@ -27,6 +27,7 @@ namespace ShaderStrippingAndPrefiltering
             public bool stripScreenCoordOverrideVariants { get; set; }
             public bool stripUnusedVariants { get; set; }
             public bool stripUnusedPostProcessingVariants { get; set; }
+            public bool stripUnusedXRVariants { get; set; }
 
             public Shader shader { get; set; }
             public ShaderType shaderType { get; set; }
@@ -36,6 +37,7 @@ namespace ShaderStrippingAndPrefiltering
             public PassType passType { get; set; }
             public PassIdentifier passIdentifier { get; set; }
 
+            public bool IsHDRDisplaySupportEnabled { get; set; }
             public bool IsHDRShaderVariantValid { get; set; }
 
 

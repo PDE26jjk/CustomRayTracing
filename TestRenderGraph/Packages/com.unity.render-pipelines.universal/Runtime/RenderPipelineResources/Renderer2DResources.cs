@@ -1,12 +1,10 @@
 using System;
-using System.ComponentModel;
 
 namespace UnityEngine.Rendering.Universal
 {
     [Serializable]
-    [HideInInspector]
     [SupportedOnRenderPipeline(typeof(UniversalRenderPipelineAsset))]
-    [Category("Resources/Renderer 2D")]
+    [Categorization.CategoryInfo(Name = "R: 2D Renderer", Order = 1000), HideInInspector]
     class Renderer2DResources : IRenderPipelineResources
     {
         [SerializeField][HideInInspector] private int m_Version = 0;
@@ -77,15 +75,19 @@ namespace UnityEngine.Rendering.Universal
             set => this.SetValueAndNotify(ref m_FallOffLookup, value, nameof(m_FallOffLookup));
         }
 
-#if UNITY_EDITOR
-        [SerializeField, ResourcePath("Runtime/Materials/Sprite-Lit-Default.mat")]
-        Material m_DefaultCustomMaterial = null;
-        internal Material defaultCustomMaterial
+        [SerializeField,ResourcePath("Shaders/Utils/CopyDepth.shader")]
+        private Shader m_CopyDepthPS;
+
+        /// <summary>
+        /// Copy Depth shader.
+        /// </summary>
+        internal Shader copyDepthPS
         {
-            get => m_DefaultCustomMaterial;
-            set => this.SetValueAndNotify(ref m_DefaultCustomMaterial, value, nameof(m_DefaultCustomMaterial));
+            get => m_CopyDepthPS;
+            set => this.SetValueAndNotify(ref m_CopyDepthPS, value, nameof(m_CopyDepthPS));
         }
 
+#if UNITY_EDITOR
         [SerializeField, ResourcePath("Runtime/Materials/Sprite-Lit-Default.mat")]
         Material m_DefaultLitMaterial = null;
         internal Material defaultLitMaterial
@@ -110,6 +112,5 @@ namespace UnityEngine.Rendering.Universal
             set => this.SetValueAndNotify(ref m_DefaultMaskMaterial, value, nameof(m_DefaultMaskMaterial));
         }
 #endif
-
     }
 }

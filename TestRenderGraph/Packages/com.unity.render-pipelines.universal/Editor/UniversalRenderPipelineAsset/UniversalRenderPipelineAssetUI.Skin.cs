@@ -49,7 +49,7 @@ namespace UnityEditor.Rendering.Universal
 
             // Main light
             public static GUIContent mainLightRenderingModeText = EditorGUIUtility.TrTextContent("Main Light", "Main light is the brightest directional light.");
-            public static GUIContent supportsMainLightShadowsText = EditorGUIUtility.TrTextContent("Cast Shadows", "If enabled the main light can be a shadow casting light.");
+            public static GUIContent supportsMainLightShadowsText = EditorGUIUtility.TrTextContent("Cast Shadows", "If enabled, the main light can be a shadow casting light.");
             public static GUIContent mainLightShadowmapResolutionText = EditorGUIUtility.TrTextContent("Shadow Resolution", "Resolution of the main light shadowmap texture. If cascades are enabled, cascades will be packed into an atlas and this setting controls the maximum shadows atlas resolution.");
 
             // Probe volumes
@@ -65,7 +65,7 @@ namespace UnityEditor.Rendering.Universal
             // Additional lights
             public static GUIContent addditionalLightsRenderingModeText = EditorGUIUtility.TrTextContent("Additional Lights", "Additional lights support.");
             public static GUIContent perObjectLimit = EditorGUIUtility.TrTextContent("Per Object Limit", "Maximum amount of additional lights. These lights are sorted and culled per-object.");
-            public static GUIContent supportsAdditionalShadowsText = EditorGUIUtility.TrTextContent("Cast Shadows", "If enabled shadows will be supported for spot lights.\n");
+            public static GUIContent supportsAdditionalShadowsText = EditorGUIUtility.TrTextContent("Cast Shadows", "If enabled, shadows will be supported for spot and point lights.");
             public static GUIContent additionalLightsShadowmapResolution = EditorGUIUtility.TrTextContent("Shadow Atlas Resolution", "All additional lights are packed into a single shadowmap atlas. This setting controls the atlas size.");
             public static GUIContent additionalLightsShadowResolutionTiers = EditorGUIUtility.TrTextContent("Shadow Resolution Tiers", $"Additional Lights Shadow Resolution Tiers. Rounded to the next power of two, and clamped to be at least {UniversalAdditionalLightData.AdditionalLightsShadowMinimumResolution}.");
             public static GUIContent[] additionalLightsShadowResolutionTierNames =
@@ -108,9 +108,11 @@ namespace UnityEditor.Rendering.Universal
             // Post-processing
             public static GUIContent colorGradingMode = EditorGUIUtility.TrTextContent("Grading Mode", "Defines how color grading will be applied. Operators will react differently depending on the mode.");
             public static GUIContent colorGradingLutSize = EditorGUIUtility.TrTextContent("LUT size", "Sets the size of the internal and external color grading lookup textures (LUTs).");
+            public static GUIContent allowPostProcessAlphaOutput = EditorGUIUtility.TrTextContent("Alpha Processing", "When enabled, post-processing outputs alpha channel if available. Alpha 0 preserves the original color. Otherwise post-processing applies to the alpha channel as well. Results may vary depending on the effect.");
             public static GUIContent useFastSRGBLinearConversion = EditorGUIUtility.TrTextContent("Fast sRGB/Linear conversions", "Use faster, but less accurate approximation functions when converting between the sRGB and Linear color spaces.");
             public static GUIContent supportDataDrivenLensFlare = EditorGUIUtility.TrTextContent("Data Driven Lens Flare", "When enabled, URP allocates shader variants and memory for Data Driven Lens Flare effect.");
             public static GUIContent supportScreenSpaceLensFlare = EditorGUIUtility.TrTextContent("Screen Space Lens Flare", "When enabled, URP allocates shader variants and memory for Screen Space Lens Flare effect.");
+            public static string alphaOutputWarning = "Camera back-buffer format does not support alpha channel. Final output will be opaque.";
             public static string colorGradingModeWarning = "HDR rendering is required to use the high dynamic range color grading mode. The low dynamic range will be used instead.";
             public static string colorGradingModeWithHDROutput = "With the current configuration, Unity uses the HDR color grading mode when outputting to an HDR display.";
             public static string colorGradingModeSpecInfo = "The high dynamic range color grading mode works best on platforms that support floating point textures.";
@@ -123,10 +125,6 @@ namespace UnityEditor.Rendering.Universal
 
             // GPU Resident Drawer
             public static GUIContent gpuResidentDrawerMode = EditorGUIUtility.TrTextContent("GPU Resident Drawer", "Enables draw submission through the GPU Resident Drawer, which can improve CPU performance");
-            public static GUIContent useLegacyLightmaps = EditorGUIUtility.TrTextContent("Use Legacy Lightmaps",
-                "When enabled, lightmaps will be bound as individual textures instead of as a single texture array. This causes the batch to break if a new lightmap needs to be bound, potentially increasing the number of draw calls."
-                + "This can reduce memory usage and may improve performance on certain hardware that doesn't support texture arrays efficiently."
-            );
             public static GUIContent smallMeshScreenPercentage = EditorGUIUtility.TrTextContent("Small-Mesh Screen-Percentage", "Default minimum screen percentage (0-20%) gpu-driven Renderers can cover before getting culled. If a Renderer is part of a LODGroup, this will be ignored.");
             public static GUIContent gpuResidentDrawerEnableOcclusionCullingInCameras = EditorGUIUtility.TrTextContent("GPU Occlusion Culling", "Enables GPU occlusion culling in Game and SceneView cameras.");
 

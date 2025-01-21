@@ -12,14 +12,16 @@ namespace UnityEngine.Rendering.Universal.Internal
     /// </summary>
     public class DepthOnlyPass : ScriptableRenderPass
     {
-        private static readonly ShaderTagId k_ShaderTagId = new ShaderTagId("DepthOnly");
-
         private RTHandle destination { get; set; }
         private GraphicsFormat depthStencilFormat;
         internal ShaderTagId shaderTagId { get; set; } = k_ShaderTagId;
 
         private PassData m_PassData;
         FilteringSettings m_FilteringSettings;
+
+        // Statics
+        private static readonly ShaderTagId k_ShaderTagId = new ShaderTagId("DepthOnly");
+        private static readonly int s_CameraDepthTextureID = Shader.PropertyToID("_CameraDepthTexture");
 
         /// <summary>
         /// Creates a new <c>DepthOnlyPass</c> instance.
@@ -32,7 +34,7 @@ namespace UnityEngine.Rendering.Universal.Internal
         /// <seealso cref="LayerMask"/>
         public DepthOnlyPass(RenderPassEvent evt, RenderQueueRange renderQueueRange, LayerMask layerMask)
         {
-            base.profilingSampler = new ProfilingSampler(nameof(DepthOnlyPass));
+            profilingSampler = new ProfilingSampler("Draw Depth Only");
             m_PassData = new PassData();
             m_FilteringSettings = new FilteringSettings(renderQueueRange, layerMask);
             renderPassEvent = evt;
@@ -119,13 +121,13 @@ namespace UnityEngine.Rendering.Universal.Internal
             return new RendererListParams(renderingData.cullResults, drawSettings, m_FilteringSettings);
         }
 
-        internal void Render(RenderGraph renderGraph, ContextContainer frameData, ref TextureHandle cameraDepthTexture, uint batchLayerMask = uint.MaxValue)
+        internal void Render(RenderGraph renderGraph, ContextContainer frameData, ref TextureHandle cameraDepthTexture, uint batchLayerMask, bool setGlobalDepth)
         {
             UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
 
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("DepthOnly Prepass", out var passData, base.profilingSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
                 var param = InitRendererListParams(renderingData, cameraData, lightData);
                 param.filteringSettings.batchLayerMask = batchLayerMask;
@@ -134,10 +136,14 @@ namespace UnityEngine.Rendering.Universal.Internal
 
                 builder.SetRenderAttachmentDepth(cameraDepthTexture, AccessFlags.Write);
 
+                if (setGlobalDepth)
+                    builder.SetGlobalTextureAfterPass(cameraDepthTexture, s_CameraDepthTextureID);
+
                 //  TODO RENDERGRAPH: culling? force culling off for testing
                 builder.AllowPassCulling(false);
                 builder.AllowGlobalStateModification(true);
-                builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering);
+                if (cameraData.xr.enabled)
+                    builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering && cameraData.xrUniversal.canFoveateIntermediatePasses);
 
                 builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
                 {

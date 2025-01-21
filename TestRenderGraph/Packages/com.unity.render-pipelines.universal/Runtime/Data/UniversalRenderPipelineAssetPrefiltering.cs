@@ -40,6 +40,7 @@ namespace UnityEngine.Rendering.Universal
         [ShaderKeywordFilter.RemoveIf(true, keywordNames: ShaderKeywordStrings.DBufferMRT1)]
         [ShaderKeywordFilter.RemoveIf(true, keywordNames: ShaderKeywordStrings.DBufferMRT2)]
         [ShaderKeywordFilter.RemoveIf(true, keywordNames: ShaderKeywordStrings.DBufferMRT3)]
+        [ShaderKeywordFilter.RemoveIf(true, keywordNames: ShaderKeywordStrings.USE_LEGACY_LIGHTMAPS)]
         private const bool k_CommonGLDefaults = true;
 
         // Foveated Rendering
@@ -117,6 +118,10 @@ namespace UnityEngine.Rendering.Universal
         })]
         [SerializeField] private bool m_PrefilterHDROutput = false;
 
+        // Alpha Output
+        [ShaderKeywordFilter.RemoveIf(true, keywordNames: ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT)]
+        [SerializeField] private bool m_PrefilterAlphaOutput = false;
+
         // Screen Space Ambient Occlusion (SSAO) specific keywords
         [ShaderKeywordFilter.RemoveIf(true, keywordNames: ScreenSpaceAmbientOcclusion.k_SourceDepthNormalsKeyword)]
         [SerializeField] private bool m_PrefilterSSAODepthNormals = false;
@@ -172,7 +177,8 @@ namespace UnityEngine.Rendering.Universal
         [SerializeField] private bool m_PrefilterNativeRenderPass = false;
 
         // Use legacy lightmaps (GPU resident drawer)
-        [ShaderKeywordFilter.SelectOrRemove(true,     keywordNames: ShaderKeywordStrings.USE_LEGACY_LIGHTMAPS)]
+        [ShaderKeywordFilter.ApplyRulesIfNotGraphicsAPI(GraphicsDeviceType.OpenGLES3, GraphicsDeviceType.OpenGLCore)]
+        [ShaderKeywordFilter.SelectOrRemove(true, keywordNames: ShaderKeywordStrings.USE_LEGACY_LIGHTMAPS)]
         [SerializeField] private bool m_PrefilterUseLegacyLightmaps = false;
 
         /// <summary>
@@ -191,6 +197,7 @@ namespace UnityEngine.Rendering.Universal
 
             public bool stripXRKeywords;
             public bool stripHDRKeywords;
+            public bool stripAlphaOutputKeywords;
             public bool stripDebugDisplay;
             public bool stripScreenCoordOverride;
             public bool stripWriteRenderingLayers;
@@ -229,6 +236,7 @@ namespace UnityEngine.Rendering.Universal
 
             m_PrefilterXRKeywords                    = prefilteringData.stripXRKeywords;
             m_PrefilterHDROutput                     = prefilteringData.stripHDRKeywords;
+            m_PrefilterAlphaOutput                   = prefilteringData.stripAlphaOutputKeywords;
             m_PrefilterDebugKeywords                 = prefilteringData.stripDebugDisplay;
             m_PrefilterWriteRenderingLayers          = prefilteringData.stripWriteRenderingLayers;
             m_PrefilterScreenCoord                   = prefilteringData.stripScreenCoordOverride;

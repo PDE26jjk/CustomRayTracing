@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using UnityEditor.Rendering;
 using UnityEngine.Experimental.Rendering;
 
 namespace UnityEngine.Rendering.Universal
@@ -36,64 +35,33 @@ namespace UnityEngine.Rendering.Universal
         }
 
         /// <summary>
-        /// Returns True if <see cref="UniversalRendererData"/> will require rendering layers texture.
-        /// </summary>
-        /// <param name="universalRendererData"></param>
-        /// <param name="msaaSampleCount">Event at which rendering layers texture needs to be created</param>
-        /// <param name="combinedEvent">Event at which rendering layers texture needs to be created</param>
-        /// <param name="combinedMaskSize">The mask size of rendering layers texture</param>
-        public static bool RequireRenderingLayers(UniversalRendererData universalRendererData, int msaaSampleCount, out Event combinedEvent, out MaskSize combinedMaskSize)
-        {
-            combinedEvent = Event.Opaque;
-            combinedMaskSize = MaskSize.Bits8;
-
-            bool isDeferred = universalRendererData.renderingMode == RenderingMode.Deferred;
-            bool result = false;
-            foreach (var rendererFeature in universalRendererData.rendererFeatures)
-            {
-                if (rendererFeature.isActive)
-                {
-                    result |= rendererFeature.RequireRenderingLayers(isDeferred, universalRendererData.accurateGbufferNormals, out Event rendererEvent, out MaskSize rendererMaskSize);
-                    combinedEvent = Combine(combinedEvent, rendererEvent);
-                    combinedMaskSize = Combine(combinedMaskSize, rendererMaskSize);
-                }
-            }
-
-            // Rendering layers can not use MSAA resolve, because it encodes integer
-            if (msaaSampleCount > 1 && combinedEvent == Event.Opaque && !isDeferred)
-                combinedEvent = Event.DepthNormalPrePass;
-
-            // Make sure texture has enough bits to encode all rendering layers in urp global settings
-            if (UniversalRenderPipelineGlobalSettings.instance)
-            {
-                int count =  RenderingLayerMask.GetRenderingLayerCount();
-                MaskSize maskSize = GetMaskSize(count);
-                combinedMaskSize = Combine(combinedMaskSize, maskSize);
-            }
-
-            return result;
-        }
-
-        /// <summary>
         /// Returns True if <see cref="UniversalRenderer"/> will require rendering layers texture.
         /// </summary>
         /// <param name="universalRenderer"></param>
-        /// <param name="rendererFeatures">Event at which rendering layers texture needs to be created</param>
-        /// <param name="msaaSampleCount">Event at which rendering layers texture needs to be created</param>
+        /// <param name="rendererFeatures">List of renderer features used by the renderer</param>
+        /// <param name="msaaSampleCount">MSAA sample count</param>
         /// <param name="combinedEvent">Event at which rendering layers texture needs to be created</param>
         /// <param name="combinedMaskSize">The mask size of rendering layers texture</param>
         public static bool RequireRenderingLayers(UniversalRenderer universalRenderer, List<ScriptableRendererFeature> rendererFeatures, int msaaSampleCount, out Event combinedEvent, out MaskSize combinedMaskSize)
         {
+            RenderingMode renderingMode = universalRenderer.renderingModeActual;
+            bool accurateGBufferNormals = universalRenderer.accurateGbufferNormals;
+            return RequireRenderingLayers(rendererFeatures, renderingMode, accurateGBufferNormals, msaaSampleCount,
+                out combinedEvent, out combinedMaskSize);
+        }
+
+        internal static bool RequireRenderingLayers(List<ScriptableRendererFeature> rendererFeatures, RenderingMode renderingMode, bool accurateGbufferNormals, int msaaSampleCount, out Event combinedEvent, out MaskSize combinedMaskSize)
+        {
             combinedEvent = Event.Opaque;
             combinedMaskSize = MaskSize.Bits8;
 
-            bool isDeferred = universalRenderer.renderingModeActual == RenderingMode.Deferred;
+            bool isDeferred = renderingMode == RenderingMode.Deferred;
             bool result = false;
             foreach (var rendererFeature in rendererFeatures)
             {
                 if (rendererFeature.isActive)
                 {
-                    result |= rendererFeature.RequireRenderingLayers(isDeferred, universalRenderer.accurateGbufferNormals, out Event rendererEvent, out MaskSize rendererMaskSize);
+                    result |= rendererFeature.RequireRenderingLayers(isDeferred, accurateGbufferNormals, out Event rendererEvent, out MaskSize rendererMaskSize);
                     combinedEvent = Combine(combinedEvent, rendererEvent);
                     combinedMaskSize = Combine(combinedMaskSize, rendererMaskSize);
                 }
@@ -106,7 +74,7 @@ namespace UnityEngine.Rendering.Universal
             // Make sure texture has enough bits to encode all rendering layers in urp global settings
             if (UniversalRenderPipelineGlobalSettings.instance)
             {
-                int count =  RenderingLayerMask.GetLastDefinedRenderingLayerIndex();
+                int count =  RenderingLayerMask.GetRenderingLayerCount();
                 MaskSize maskSize = GetMaskSize(count);
                 combinedMaskSize = Combine(combinedMaskSize, maskSize);
             }
@@ -141,7 +109,16 @@ namespace UnityEngine.Rendering.Universal
                 case MaskSize.Bits8:
                     return GraphicsFormat.R8_UNorm;
                 case MaskSize.Bits16:
-                    return GraphicsFormat.R16_UNorm;
+                {
+                        //webgpu does not support r16_unorm as a render target format
+#if UNITY_2023_2_OR_NEWER
+                        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.WebGPU)
+                        {
+                            return GraphicsFormat.R32_SFloat;
+                        }
+#endif
+                        return GraphicsFormat.R16_UNorm;
+                }
                 case MaskSize.Bits24:
                 case MaskSize.Bits32:
                     return GraphicsFormat.R32_SFloat;

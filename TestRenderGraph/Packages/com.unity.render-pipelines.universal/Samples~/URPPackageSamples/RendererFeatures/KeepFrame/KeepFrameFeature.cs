@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering.RenderGraphModule;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule.Util;
 using UnityEngine.Rendering.Universal;
 
 // This renderer feature will replicate a "don't clear" behaviour by injecting two passes into the pipeline:
@@ -16,11 +17,6 @@ public class KeepFrameFeature : ScriptableRendererFeature
     // This pass is responsible for copying color to a specified destination
     class CopyFramePass : ScriptableRenderPass
     {
-        class PassData
-        {
-            public TextureHandle source;
-        }
-
         RTHandle m_Destination;
 
         public void Setup(RTHandle destination)
@@ -28,7 +24,9 @@ public class KeepFrameFeature : ScriptableRendererFeature
             m_Destination = destination;
         }
 
-        // The Execute method gets called by the non-RenderGraph pipeline
+#pragma warning disable 618, 672 // Type or member is obsolete, Member overrides obsolete member
+
+        // Unity calls the Execute method in the Compatibility mode
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             if (renderingData.cameraData.camera.cameraType != CameraType.Game)
@@ -44,6 +42,8 @@ public class KeepFrameFeature : ScriptableRendererFeature
             CommandBufferPool.Release(cmd);
         }
 
+#pragma warning restore 618, 672
+
         // RecordRenderGraph is called for the RenderGraph path.
         // Because RenderGraph has to calculate internally how resources are used we must be aware of 2
         // distinct timelines inside this method: one for recording resource usage and one for recording draw commands.
@@ -55,29 +55,20 @@ public class KeepFrameFeature : ScriptableRendererFeature
 
             if (cameraData.camera.cameraType != CameraType.Game)
                 return;
-
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("Copy Frame Pass", out var passData))
-            {
-                TextureHandle source = resourceData.activeColorTexture;
-
-                // When using the RenderGraph API the lifetime and ownership of resources is managed by the render graph system itself.
-                // This allows for optimal resource usage and other optimizations to be done automatically for the user.
-                // In the cases where resources must persist across frames, between different cameras or when users want
-                // to manage their lifetimes themselves, the resources must be imported when recording the render pass.
-                TextureHandle destination = renderGraph.ImportTexture(m_Destination);
-
-                if (!source.IsValid() || !destination.IsValid())
-                    return;
-
-                passData.source = source;
-                builder.UseTexture(source, AccessFlags.Read);
-                builder.SetRenderAttachment(destination, 0, AccessFlags.Write);
-
-                builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
-                {
-                    Blitter.BlitTexture(context.cmd, data.source, new Vector4(1, 1, 0, 0), 0, true);
-                });
-            }
+            
+            TextureHandle source = resourceData.activeColorTexture;
+            
+            // When using the RenderGraph API the lifetime and ownership of resources is managed by the render graph system itself.
+            // This allows for optimal resource usage and other optimizations to be done automatically for the user.
+            // In the cases where resources must persist across frames, between different cameras or when users want
+            // to manage their lifetimes themselves, the resources must be imported when recording the render pass.
+            TextureHandle destination = renderGraph.ImportTexture(m_Destination);
+            
+            if (!source.IsValid() || !destination.IsValid())
+                return;
+            
+            RenderGraphUtils.BlitMaterialParameters para = new(source, destination, Blitter.GetBlitMaterial(TextureDimension.Tex2D), 0);
+            renderGraph.AddBlitPass(para, "Copy Frame Pass");
         }
     }
 
@@ -114,6 +105,9 @@ public class KeepFrameFeature : ScriptableRendererFeature
             Blitter.BlitTexture(cmd, source, viewportScale, material, 0);
         }
 
+#pragma warning disable 618, 672 // Type or member is obsolete, Member overrides obsolete member
+
+        // Unity calls the Execute method in the Compatibility mode
         public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
         {
             CommandBuffer cmd = CommandBufferPool.Get(nameof(DrawOldFramePass));
@@ -125,6 +119,8 @@ public class KeepFrameFeature : ScriptableRendererFeature
             context.ExecuteCommandBuffer(cmd);
             CommandBufferPool.Release(cmd);
         }
+
+#pragma warning restore 618, 672
 
         public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
@@ -195,7 +191,7 @@ public class KeepFrameFeature : ScriptableRendererFeature
         descriptor.depthBufferBits = 0;
         descriptor.graphicsFormat = GraphicsFormat.R8G8B8A8_SRGB;
         var textureName = String.IsNullOrEmpty(settings.textureName) ? "_FrameCopyTex" : settings.textureName;
-        RenderingUtils.ReAllocateIfNeeded(ref m_OldFrameHandle, descriptor, FilterMode.Bilinear, TextureWrapMode.Clamp, name: textureName);
+        RenderingUtils.ReAllocateHandleIfNeeded(ref m_OldFrameHandle, descriptor, FilterMode.Bilinear, TextureWrapMode.Clamp, name: textureName);
 
         m_CopyFrame.Setup(m_OldFrameHandle);
         m_DrawOldFrame.Setup(settings.displayMaterial, m_OldFrameHandle, textureName);

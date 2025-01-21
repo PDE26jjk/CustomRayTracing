@@ -2,7 +2,7 @@
 #define UNIVERSAL_PARTICLES_UNLIT_FORWARD_PASS_INCLUDED
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Unlit.hlsl"
-#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Particles.hlsl"
+#include_with_pragmas "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Particles.hlsl"
 
 void InitializeInputData(VaryingsParticle input, SurfaceData surfaceData, out InputData inputData)
 {
@@ -32,7 +32,9 @@ void InitializeInputData(VaryingsParticle input, SurfaceData surfaceData, out In
         GetAbsolutePositionWS(inputData.positionWS),
         inputData.normalWS,
         inputData.viewDirectionWS,
-        input.clipPos.xy);
+        input.clipPos.xy,
+        input.probeOcclusion,
+        inputData.shadowMask);
 #else
     inputData.bakedGI = SampleSHPixel(input.vertexSH, inputData.normalWS);
 #endif
@@ -43,6 +45,10 @@ void InitializeInputData(VaryingsParticle input, SurfaceData surfaceData, out In
     #if defined(DEBUG_DISPLAY) && !defined(PARTICLES_EDITOR_META_PASS)
     inputData.vertexSH = input.vertexSH;
     #endif
+
+#if defined(DEBUG_DISPLAY) && defined(USE_APV_PROBE_OCCLUSION)
+    inputData.probeOcclusion = input.probeOcclusion;
+#endif
 }
 
 void InitializeSurfaceData(ParticleParams particleParams, out SurfaceData surfaceData)

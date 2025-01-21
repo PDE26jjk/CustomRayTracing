@@ -78,6 +78,7 @@ namespace UnityEditor.Rendering.Universal
 
         public SerializedProperty colorGradingMode { get; }
         public SerializedProperty colorGradingLutSize { get; }
+        public SerializedProperty allowPostProcessAlphaOutput { get; }
         public SerializedProperty useFastSRGBLinearConversion { get; }
         public SerializedProperty supportDataDrivenLensFlare { get; }
         public SerializedProperty supportScreenSpaceLensFlare { get; }
@@ -85,8 +86,6 @@ namespace UnityEditor.Rendering.Universal
         public SerializedProperty gpuResidentDrawerMode { get; }
         public SerializedProperty smallMeshScreenPercentage { get; }
         public SerializedProperty gpuResidentDrawerEnableOcclusionCullingInCameras { get; }
-
-        public SerializedProperty useLegacyLightmaps { get; }
 
 #if ADAPTIVE_PERFORMANCE_2_0_0_OR_NEWER
         public SerializedProperty useAdaptivePerformance { get; }
@@ -174,12 +173,12 @@ namespace UnityEditor.Rendering.Universal
             colorGradingMode = serializedObject.FindProperty("m_ColorGradingMode");
             colorGradingLutSize = serializedObject.FindProperty("m_ColorGradingLutSize");
 
+            allowPostProcessAlphaOutput = serializedObject.FindProperty("m_AllowPostProcessAlphaOutput");
             useFastSRGBLinearConversion = serializedObject.FindProperty("m_UseFastSRGBLinearConversion");
             supportDataDrivenLensFlare = serializedObject.FindProperty("m_SupportDataDrivenLensFlare");
             supportScreenSpaceLensFlare = serializedObject.FindProperty("m_SupportScreenSpaceLensFlare");
 
             gpuResidentDrawerMode = serializedObject.FindProperty("m_GPUResidentDrawerMode");
-            useLegacyLightmaps = serializedObject.FindProperty("m_UseLegacyLightmaps");
             smallMeshScreenPercentage = serializedObject.FindProperty("m_SmallMeshScreenPercentage");
             gpuResidentDrawerEnableOcclusionCullingInCameras = serializedObject.FindProperty("m_GPUResidentDrawerEnableOcclusionCullingInCameras");
 

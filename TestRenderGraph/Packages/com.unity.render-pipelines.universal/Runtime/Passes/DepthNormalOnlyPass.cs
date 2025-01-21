@@ -19,10 +19,14 @@ namespace UnityEngine.Rendering.Universal.Internal
         internal RenderingLayerUtils.MaskSize renderingLayersMaskSize { get; set; }
         private FilteringSettings m_FilteringSettings;
         private PassData m_PassData;
-        // Constants
+
+        // Statics
         private static readonly List<ShaderTagId> k_DepthNormals = new List<ShaderTagId> { new ShaderTagId("DepthNormals"), new ShaderTagId("DepthNormalsOnly") };
         private static readonly RTHandle[] k_ColorAttachment1 = new RTHandle[1];
         private static readonly RTHandle[] k_ColorAttachment2 = new RTHandle[2];
+        private static readonly int s_CameraDepthTextureID = Shader.PropertyToID("_CameraDepthTexture");
+        private static readonly int s_CameraNormalsTextureID = Shader.PropertyToID("_CameraNormalsTexture");
+        private static readonly int s_CameraRenderingLayersTextureID = Shader.PropertyToID("_CameraRenderingLayersTexture");
 
         /// <summary>
         /// Creates a new <c>DepthNormalOnlyPass</c> instance.
@@ -35,7 +39,7 @@ namespace UnityEngine.Rendering.Universal.Internal
         /// <seealso cref="LayerMask"/>
         public DepthNormalOnlyPass(RenderPassEvent evt, RenderQueueRange renderQueueRange, LayerMask layerMask)
         {
-            base.profilingSampler = new ProfilingSampler(nameof(DepthNormalOnlyPass));
+            profilingSampler = ProfilingSampler.Get(URPProfileId.DrawDepthNormalPrepass);
             m_PassData = new PassData();
             m_FilteringSettings = new FilteringSettings(renderQueueRange, layerMask);
             renderPassEvent = evt;
@@ -113,20 +117,17 @@ namespace UnityEngine.Rendering.Universal.Internal
         }
 
         private static void ExecutePass(RasterCommandBuffer cmd, PassData passData, RendererList rendererList)
-        {
-            using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.DepthNormalPrepass)))
-            {
-                // Enable Rendering Layers
-                if (passData.enableRenderingLayers)
-                    cmd.SetKeyword(ShaderGlobalKeywords.WriteRenderingLayers, true);
+        {            
+            // Enable Rendering Layers
+            if (passData.enableRenderingLayers)
+                cmd.SetKeyword(ShaderGlobalKeywords.WriteRenderingLayers, true);
 
-                // Draw
-                cmd.DrawRendererList(rendererList);
+            // Draw
+            cmd.DrawRendererList(rendererList);
 
-                // Clean up
-                if (passData.enableRenderingLayers)
-                    cmd.SetKeyword(ShaderGlobalKeywords.WriteRenderingLayers, false);
-            }
+            // Clean up
+            if (passData.enableRenderingLayers)
+                cmd.SetKeyword(ShaderGlobalKeywords.WriteRenderingLayers, false);            
         }
 
         /// <inheritdoc/>
@@ -141,7 +142,13 @@ namespace UnityEngine.Rendering.Universal.Internal
             m_PassData.enableRenderingLayers = enableRenderingLayers;
             var param = InitRendererListParams(universalRenderingData, cameraData,lightData);
             var rendererList = context.CreateRendererList(ref param);
-            ExecutePass(CommandBufferHelpers.GetRasterCommandBuffer(renderingData.commandBuffer), m_PassData, rendererList);
+
+            var cmd = CommandBufferHelpers.GetRasterCommandBuffer(renderingData.commandBuffer);
+
+            using (new ProfilingScope(cmd, profilingSampler))
+            {
+                ExecutePass(cmd, m_PassData, rendererList);
+            }
         }
 
         /// <inheritdoc/>
@@ -179,13 +186,13 @@ namespace UnityEngine.Rendering.Universal.Internal
             return new RendererListParams(renderingData.cullResults, drawSettings, m_FilteringSettings);
         }
 
-        internal void Render(RenderGraph renderGraph, ContextContainer frameData, TextureHandle cameraNormalsTexture, TextureHandle cameraDepthTexture, TextureHandle renderingLayersTexture, uint batchLayerMask = uint.MaxValue, bool postSetGlobalTextures = true)
+        internal void Render(RenderGraph renderGraph, ContextContainer frameData, TextureHandle cameraNormalsTexture, TextureHandle cameraDepthTexture, TextureHandle renderingLayersTexture, uint batchLayerMask, bool setGlobalDepth, bool setGlobalTextures)
         {
             UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
 
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("DepthNormals Prepass", out var passData, base.profilingSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
                 passData.cameraNormalsTexture = cameraNormalsTexture;
                 builder.SetRenderAttachment(cameraNormalsTexture, 0, AccessFlags.Write);
@@ -204,17 +211,19 @@ namespace UnityEngine.Rendering.Universal.Internal
                 param.filteringSettings.batchLayerMask = batchLayerMask;
                 passData.rendererList = renderGraph.CreateRendererList(param);
                 builder.UseRendererList(passData.rendererList);
-                builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering);
+                if (cameraData.xr.enabled)
+                    builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering && cameraData.xrUniversal.canFoveateIntermediatePasses);
 
-                UniversalRenderer universalRenderer = cameraData.renderer as UniversalRenderer;
-                if (postSetGlobalTextures && universalRenderer != null)
+                if (setGlobalTextures)
                 {
-                    var renderingMode = universalRenderer.renderingModeActual;
-                    if (cameraNormalsTexture.IsValid() && renderingMode != RenderingMode.Deferred)
-                        builder.SetGlobalTextureAfterPass(cameraNormalsTexture, Shader.PropertyToID("_CameraNormalsTexture"));
-                    if (cameraDepthTexture.IsValid() && renderingMode != RenderingMode.Deferred)
-                        builder.SetGlobalTextureAfterPass(cameraDepthTexture, Shader.PropertyToID("_CameraDepthTexture"));
+                    builder.SetGlobalTextureAfterPass(cameraNormalsTexture, s_CameraNormalsTextureID);
+
+                    if (passData.enableRenderingLayers)
+                        builder.SetGlobalTextureAfterPass(renderingLayersTexture, s_CameraRenderingLayersTextureID);
                 }
+
+                if (setGlobalDepth)
+                    builder.SetGlobalTextureAfterPass(cameraDepthTexture, s_CameraDepthTextureID);
 
                 //  TODO RENDERGRAPH: culling? force culling off for testing
                 builder.AllowPassCulling(false);

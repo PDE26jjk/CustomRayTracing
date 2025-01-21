@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEditor.Rendering.Universal;
 using UnityEditorInternal;
 using UnityEngine;
@@ -27,34 +28,37 @@ namespace ShaderStrippingAndPrefiltering
             internal bool stripUnusedVariants;
             internal bool containsForwardRenderer;
             internal bool everyRendererHasSSAO;
-            internal ShaderFeatures defaultURPAssetFeatures =
-                  ShaderFeatures.MainLight
-                | ShaderFeatures.MixedLighting
-                | ShaderFeatures.TerrainHoles
-                | ShaderFeatures.DrawProcedural
-                | ShaderFeatures.LightCookies
-                | ShaderFeatures.LODCrossFade
-                | ShaderFeatures.AutoSHMode
-                | ShaderFeatures.DataDrivenLensFlare
-                | ShaderFeatures.ScreenSpaceLensFlare;
 
-            internal RendererRequirements defaultRendererRequirements = new()
+            internal ShaderFeatures defaultURPAssetFeatures
             {
-                msaaSampleCount = 1,
-                needsUnusedVariants = false,
-                isUniversalRenderer = true,
-                needsProcedural = true,
-                needsAdditionalLightShadows = false,
-                needsSoftShadows = false,
-                needsShadowsOff = false,
-                needsAdditionalLightsOff = false,
-                needsGBufferRenderingLayers = false,
-                needsGBufferAccurateNormals = false,
-                needsRenderPass = false,
-                needsReflectionProbeBlending = false,
-                needsReflectionProbeBoxProjection = false,
-                renderingMode = RenderingMode.Forward,
-            };
+                get
+                {
+                    ShaderFeatures defaultFeatures =
+                              ShaderFeatures.MainLight
+                            | ShaderFeatures.MixedLighting
+                            | ShaderFeatures.TerrainHoles
+                            | ShaderFeatures.LightCookies
+                            | ShaderFeatures.LODCrossFade
+                            | ShaderFeatures.AutoSHMode
+                            | ShaderFeatures.DataDrivenLensFlare
+                            | ShaderFeatures.ScreenSpaceLensFlare
+                            | GetCorrectProceduralKeyword(ref defaultRendererRequirements);
+
+                    if (PlayerSettings.allowHDRDisplaySupport)
+                        defaultFeatures |= ShaderFeatures.HdrGrading;
+
+                    return defaultFeatures;
+                }
+            }
+
+            internal bool NeedsProceduralKeyword(ref RendererRequirements rendererRequirements) => ShaderBuildPreprocessor.NeedsProceduralKeyword(ref rendererRequirements);
+
+            internal ShaderFeatures GetCorrectProceduralKeyword(ref RendererRequirements rendererRequirements)
+            {
+                return NeedsProceduralKeyword(ref rendererRequirements) ? ShaderFeatures.DrawProcedural : ShaderFeatures.None;
+            }
+
+            internal RendererRequirements defaultRendererRequirements = new();
 
             public TestHelper()
             {
@@ -65,7 +69,7 @@ namespace ShaderStrippingAndPrefiltering
 
                     urpAsset = UniversalRenderPipelineAsset.Create(rendererData);
                     urpAsset.name = "TestHelper_URPAsset";
-                    GraphicsSettings.renderPipelineAsset = urpAsset;
+                    GraphicsSettings.defaultRenderPipeline = urpAsset;
 
                     ScriptableRenderer = urpAsset.GetRenderer(0);
                     universalRenderer = ScriptableRenderer as UniversalRenderer;
@@ -147,6 +151,22 @@ namespace ShaderStrippingAndPrefiltering
 
             internal void ResetData()
             {
+                defaultRendererRequirements = new();
+                defaultRendererRequirements.msaaSampleCount = 1;
+                defaultRendererRequirements.needsUnusedVariants = false;
+                defaultRendererRequirements.isUniversalRenderer = true;
+                defaultRendererRequirements.needsAdditionalLightShadows = false;
+                defaultRendererRequirements.needsSoftShadows = false;
+                defaultRendererRequirements.needsShadowsOff = false;
+                defaultRendererRequirements.needsAdditionalLightsOff = false;
+                defaultRendererRequirements.needsGBufferRenderingLayers = false;
+                defaultRendererRequirements.needsGBufferAccurateNormals = false;
+                defaultRendererRequirements.needsRenderPass = false;
+                defaultRendererRequirements.needsReflectionProbeBlending = false;
+                defaultRendererRequirements.needsReflectionProbeBoxProjection = false;
+                defaultRendererRequirements.renderingMode = RenderingMode.Forward;
+                defaultRendererRequirements.needsProcedural = NeedsProceduralKeyword(ref defaultRendererRequirements);
+
                 urpAsset.mainLightRenderingMode = LightRenderingMode.Disabled;
                 urpAsset.supportsMainLightShadows = false;
                 urpAsset.additionalLightsRenderingMode = LightRenderingMode.Disabled;
@@ -189,10 +209,10 @@ namespace ShaderStrippingAndPrefiltering
         {
             UniversalRenderPipelineGlobalSettings.Ensure();
 
-            m_PreviousRenderPipelineAssetGraphicsSettings = GraphicsSettings.renderPipelineAsset;
+            m_PreviousRenderPipelineAssetGraphicsSettings = GraphicsSettings.defaultRenderPipeline;
             m_PreviousRenderPipelineAssetQualitySettings = QualitySettings.renderPipeline;
 
-            GraphicsSettings.renderPipelineAsset = null;
+            GraphicsSettings.defaultRenderPipeline = null;
             QualitySettings.renderPipeline = null;
         }
 
@@ -200,6 +220,7 @@ namespace ShaderStrippingAndPrefiltering
         public void Setup()
         {
             m_TestHelper = new();
+            m_TestHelper.ResetData();
         }
 
         [TearDown]
@@ -211,7 +232,7 @@ namespace ShaderStrippingAndPrefiltering
         [OneTimeTearDown]
         public void OneTimeTearDown()
         {
-            GraphicsSettings.renderPipelineAsset = m_PreviousRenderPipelineAssetGraphicsSettings;
+            GraphicsSettings.defaultRenderPipeline = m_PreviousRenderPipelineAssetGraphicsSettings;
             QualitySettings.renderPipeline = m_PreviousRenderPipelineAssetQualitySettings;
         }
 
@@ -526,7 +547,7 @@ namespace ShaderStrippingAndPrefiltering
             // Initial state
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Procedural...
@@ -546,126 +567,124 @@ namespace ShaderStrippingAndPrefiltering
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.renderingMode = RenderingMode.Forward;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.renderingMode = RenderingMode.ForwardPlus;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.ForwardPlus | ShaderFeatures.AdditionalLightsKeepOffVariants;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.ForwardPlus | ShaderFeatures.AdditionalLightsKeepOffVariants;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.renderingMode = RenderingMode.Deferred;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.DeferredShading;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.DeferredShading;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // The Off variant for Additional Lights
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsAdditionalLightsOff = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsAdditionalLightsOff = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.AdditionalLightsKeepOffVariants;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.AdditionalLightsKeepOffVariants;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // The Off variant for Main and Additional Light shadows
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsShadowsOff = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsShadowsOff = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.ShadowsKeepOffVariants;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.ShadowsKeepOffVariants;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Soft shadows
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsSoftShadows = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsSoftShadows = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.SoftShadows;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.SoftShadows;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Deferred GBuffer Rendering Layers
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsGBufferRenderingLayers = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsGBufferRenderingLayers = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.GBufferWriteRenderingLayers;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.GBufferWriteRenderingLayers;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Deferred GBuffer Accurate Normals
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsGBufferAccurateNormals = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsGBufferAccurateNormals = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.AccurateGbufferNormals;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.AccurateGbufferNormals;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Deferred GBuffer Native Render Pass
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsRenderPass = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsRenderPass = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.RenderPassEnabled;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.RenderPassEnabled;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Reflection Probe Blending
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsReflectionProbeBlending = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsReflectionProbeBlending = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.ReflectionProbeBlending;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.ReflectionProbeBlending;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             // Reflection Probe Box Projection
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsReflectionProbeBoxProjection = false;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements);;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
 
             rendererRequirements = m_TestHelper.defaultRendererRequirements;
             rendererRequirements.needsReflectionProbeBoxProjection = true;
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRenderer(rendererRequirements, ShaderFeatures.None);
-            expected = ShaderFeatures.DrawProcedural | ShaderFeatures.ReflectionProbeBoxProjection;
+            expected = m_TestHelper.GetCorrectProceduralKeyword(ref rendererRequirements) | ShaderFeatures.ReflectionProbeBoxProjection;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
-
-
         }
 
 
@@ -795,6 +814,37 @@ namespace ShaderStrippingAndPrefiltering
             actual = m_TestHelper.GetSupportedShaderFeaturesFromRendererFeatures(rendererRequirements);
             expected = ShaderFeatures.DecalGBuffer | ShaderFeatures.DecalNormalBlendLow | ShaderFeatures.DecalLayers | ShaderFeatures.DepthNormalPassRenderingLayers | ShaderFeatures.GBufferWriteRenderingLayers;
             m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
+
+            // Test with DepthNormal prepass enabled (Is enabled implicitly by SSAO f.ex)
+            ScreenSpaceAmbientOcclusion ssaoFeature = ScriptableObject.CreateInstance<ScreenSpaceAmbientOcclusion>();
+            ssaoFeature.settings = new ScreenSpaceAmbientOcclusionSettings()
+            {
+                AOMethod = ScreenSpaceAmbientOcclusionSettings.AOMethodOptions.BlueNoise,
+                Downsample = false,
+                AfterOpaque = false,
+                Source = ScreenSpaceAmbientOcclusionSettings.DepthSource.DepthNormals,
+                NormalSamples = ScreenSpaceAmbientOcclusionSettings.NormalQuality.Medium,
+                Intensity = 3.0f,
+                DirectLightingStrength = 0.25f,
+                Radius = 0.035f,
+                Samples = ScreenSpaceAmbientOcclusionSettings.AOSampleOption.Medium,
+                BlurQuality = ScreenSpaceAmbientOcclusionSettings.BlurQualityOptions.High,
+                Falloff = 100f,
+            };
+            ssaoFeature.SetActive(true);
+            m_TestHelper.rendererFeatures.Add(ssaoFeature);
+
+            ((DecalRendererFeature)m_TestHelper.rendererFeatures[0]).settings.technique = DecalTechniqueOption.ScreenSpace;
+            ((DecalRendererFeature)m_TestHelper.rendererFeatures[0]).settings.decalLayers = true;
+            rendererRequirements = m_TestHelper.defaultRendererRequirements;
+            rendererRequirements.needsUnusedVariants = false;
+            actual = m_TestHelper.GetSupportedShaderFeaturesFromRendererFeatures(rendererRequirements);
+            expected = ShaderFeatures.ScreenSpaceOcclusion | ShaderFeatures.DecalScreenSpace |
+                       ShaderFeatures.DecalNormalBlendLow | ShaderFeatures.DecalLayers |
+                       ShaderFeatures.DepthNormalPassRenderingLayers;
+            m_TestHelper.AssertShaderFeaturesAndReset(expected, actual);
+
+            m_TestHelper.rendererFeatures.Remove(ssaoFeature);
         }
 
         [Test]

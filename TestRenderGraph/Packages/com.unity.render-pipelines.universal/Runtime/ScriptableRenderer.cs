@@ -31,7 +31,7 @@ namespace UnityEngine.Rendering.Universal
             public static readonly ProfilingSampler sortRenderPasses = new ProfilingSampler($"Sort Render Passes");
             public static readonly ProfilingSampler recordRenderGraph = new ProfilingSampler($"On Record Render Graph");
             public static readonly ProfilingSampler setupLights = new ProfilingSampler($"{k_Name}.{nameof(SetupLights)}");
-            public static readonly ProfilingSampler setupCamera = new ProfilingSampler($"Setup Camera Parameters");
+            public static readonly ProfilingSampler setupCamera = new ProfilingSampler($"Setup Camera Properties");
             public static readonly ProfilingSampler vfxProcessCamera = new ProfilingSampler($"VFX Process Camera");
             public static readonly ProfilingSampler addRenderPasses = new ProfilingSampler($"{k_Name}.{nameof(AddRenderPasses)}");
             public static readonly ProfilingSampler setupRenderPasses = new ProfilingSampler($"{k_Name}.{nameof(SetupRenderPasses)}");
@@ -39,9 +39,10 @@ namespace UnityEngine.Rendering.Universal
             public static readonly ProfilingSampler internalStartRendering = new ProfilingSampler($"{k_Name}.{nameof(InternalStartRendering)}");
             public static readonly ProfilingSampler internalFinishRenderingCommon = new ProfilingSampler($"{k_Name}.{nameof(InternalFinishRenderingCommon)}");
             public static readonly ProfilingSampler drawGizmos = new ProfilingSampler($"{nameof(DrawGizmos)}");
+            public static readonly ProfilingSampler drawWireOverlay = new ProfilingSampler($"{nameof(DrawWireOverlay)}");
             internal static readonly ProfilingSampler beginXRRendering = new ProfilingSampler($"Begin XR Rendering");
             internal static readonly ProfilingSampler endXRRendering = new ProfilingSampler($"End XR Rendering");
-            internal static readonly ProfilingSampler initRenderGraphFrame = new ProfilingSampler($"Initialize Render Graph frame settings");
+            internal static readonly ProfilingSampler initRenderGraphFrame = new ProfilingSampler($"Initialize Frame");
             internal static readonly ProfilingSampler setEditorTarget = new ProfilingSampler($"Set Editor Target");
 
             public static class RenderBlock
@@ -256,6 +257,15 @@ namespace UnityEngine.Rendering.Universal
             float scaledCameraTargetHeight = (float)cameraTargetSizeCopy.y;
             float cameraWidth = (float)camera.pixelWidth;
             float cameraHeight = (float)camera.pixelHeight;
+
+            // Overlay cameras don't have a viewport. Must use the computed/inherited viewport instead of the camera one.
+            if (cameraData.renderType == CameraRenderType.Overlay)
+            {
+                // Overlay cameras inherits viewport from base.
+                // pixelRect/Width/Height is the viewport in pixels.
+                cameraWidth = cameraData.pixelWidth;
+                cameraHeight = cameraData.pixelHeight;
+            }
 
             // Use eye texture's width and height as screen params when XR is enabled
             if (cameraData.xr.enabled)
@@ -833,7 +843,7 @@ namespace UnityEngine.Rendering.Universal
 
         private void InitRenderGraphFrame(RenderGraph renderGraph)
         {
-            using (var builder = renderGraph.AddUnsafePass<PassData>("InitFrame", out var passData,
+            using (var builder = renderGraph.AddUnsafePass<PassData>(Profiling.initRenderGraphFrame.name, out var passData,
                 Profiling.initRenderGraphFrame))
             {
                 passData.renderer = this;
@@ -900,7 +910,7 @@ namespace UnityEngine.Rendering.Universal
         }
         internal void SetupRenderGraphCameraProperties(RenderGraph renderGraph, bool isTargetBackbuffer)
         {
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("SetupCameraProperties", out var passData,
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(Profiling.setupCamera.name, out var passData,
                 Profiling.setupCamera))
             {
                 passData.renderer = this;
@@ -975,7 +985,7 @@ namespace UnityEngine.Rendering.Universal
                 Profiling.drawGizmos))
             {
                 builder.SetRenderAttachment(color, 0, AccessFlags.Write);
-                builder.SetRenderAttachmentDepth(depth, AccessFlags.Read);
+                builder.SetRenderAttachmentDepth(depth, AccessFlags.ReadWrite);
 
                 passData.gizmoRenderList = renderGraph.CreateGizmoRendererList(cameraData.camera, gizmoSubset);
                 builder.UseRendererList(passData.gizmoRenderList);
@@ -986,6 +996,39 @@ namespace UnityEngine.Rendering.Universal
                     using (new ProfilingScope(rgContext.cmd, Profiling.drawGizmos))
                     {
                         rgContext.cmd.DrawRendererList(data.gizmoRenderList);
+                    }
+                });
+            }
+#endif
+        }
+
+        private class DrawWireOverlayPassData
+        {
+            public RendererListHandle wireOverlayList;
+        };
+
+        internal void DrawRenderGraphWireOverlay(RenderGraph renderGraph, ContextContainer frameData, TextureHandle color)
+        {
+#if UNITY_EDITOR
+            UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
+
+            if (!cameraData.isSceneViewCamera)
+                return;
+
+            using (var builder = renderGraph.AddRasterRenderPass<DrawWireOverlayPassData>(Profiling.drawWireOverlay.name, out var passData,
+                       Profiling.drawWireOverlay))
+            {
+                builder.SetRenderAttachment(color, 0, AccessFlags.Write);
+
+                passData.wireOverlayList = renderGraph.CreateWireOverlayRendererList(cameraData.camera);
+                builder.UseRendererList(passData.wireOverlayList);
+                builder.AllowPassCulling(false);
+
+                builder.SetRenderFunc(static (DrawWireOverlayPassData data, RasterGraphContext rgContext) =>
+                {
+                    using (new ProfilingScope(rgContext.cmd, Profiling.drawWireOverlay))
+                    {
+                        rgContext.cmd.DrawRendererList(data.wireOverlayList);
                     }
                 });
             }
@@ -1003,6 +1046,11 @@ namespace UnityEngine.Rendering.Universal
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
             if (!cameraData.xr.enabled)
                 return;
+
+            bool isDefaultXRViewport = XRSystem.GetRenderViewportScale() == 1.0f;
+            // For untethered XR, intermediate pass' foveation is currenlty unsupported with non-default viewport.
+            // Must be configured during the recording timeline before adding other XR intermediate passes.
+            cameraData.xrUniversal.canFoveateIntermediatePasses = !PlatformAutoDetect.isXRMobile || isDefaultXRViewport;
 
             using (var builder = renderGraph.AddRasterRenderPass<BeginXRPassData>("BeginXRRendering", out var passData,
                 Profiling.beginXRRendering))
@@ -1163,34 +1211,39 @@ namespace UnityEngine.Rendering.Universal
         {
         }
 
-        /// <summary>
-        /// TODO RENDERGRAPH
-        /// </summary>
-        /// <param name="context"></param>
-        /// <param name="renderingData"></param>
-        /// <param name="injectionPoint"></param>
-        internal void RecordCustomRenderGraphPasses(RenderGraph renderGraph, RenderPassEvent injectionPoint)
+        internal void RecordCustomRenderGraphPassesInEventRange(RenderGraph renderGraph, RenderPassEvent eventStart, RenderPassEvent eventEnd)
         {
-            int range = ScriptableRenderPass.GetRenderPassEventRange(injectionPoint);
-            int nextValue = (int) injectionPoint + range;
-
-            foreach (ScriptableRenderPass pass in m_ActiveRenderPassQueue)
+            // Only iterate over the active pass queue if we have a non-empty range
+            if (eventStart != eventEnd)
             {
-                if (pass.renderPassEvent >= injectionPoint && (int) pass.renderPassEvent < nextValue)
-                    pass.RecordRenderGraph(renderGraph, m_frameData);
+                foreach (ScriptableRenderPass pass in m_ActiveRenderPassQueue)
+                {
+                    if (pass.renderPassEvent >= eventStart && pass.renderPassEvent < eventEnd)
+                        pass.RecordRenderGraph(renderGraph, m_frameData);
+                }
             }
+        }
+
+        internal void CalculateSplitEventRange(RenderPassEvent startInjectionPoint, RenderPassEvent targetEvent, out RenderPassEvent startEvent, out RenderPassEvent splitEvent, out RenderPassEvent endEvent)
+        {
+            int range = ScriptableRenderPass.GetRenderPassEventRange(startInjectionPoint);
+
+            startEvent = startInjectionPoint;
+            endEvent = startEvent + range;
+
+            splitEvent = (RenderPassEvent)Math.Clamp((int)targetEvent, (int)startEvent, (int)endEvent);
         }
 
         internal void RecordCustomRenderGraphPasses(RenderGraph renderGraph, RenderPassEvent startInjectionPoint, RenderPassEvent endInjectionPoint)
         {
             int range = ScriptableRenderPass.GetRenderPassEventRange(endInjectionPoint);
-            int nextValue = (int) endInjectionPoint + range;
 
-            foreach (ScriptableRenderPass pass in m_ActiveRenderPassQueue)
-            {
-                if (pass.renderPassEvent >= startInjectionPoint && (int) pass.renderPassEvent < nextValue)
-                    pass.RecordRenderGraph(renderGraph, m_frameData);
-            }
+            RecordCustomRenderGraphPassesInEventRange(renderGraph, startInjectionPoint, endInjectionPoint + range);
+        }
+
+        internal void RecordCustomRenderGraphPasses(RenderGraph renderGraph, RenderPassEvent injectionPoint)
+        {
+            RecordCustomRenderGraphPasses(renderGraph, injectionPoint, injectionPoint);
         }
 
         // ScriptableRenderPass if executed in a critical point (such as in between Deferred and GBuffer) has to have
@@ -2212,6 +2265,33 @@ namespace UnityEngine.Rendering.Universal
 
             context.ExecuteCommandBuffer(cmd);
             cmd.Clear();
+        }
+
+        private protected int AdjustAndGetScreenMSAASamples(RenderGraph renderGraph, bool useIntermediateColorTarget)
+        {
+            #if UNITY_EDITOR
+                // In the editor, the system render target is always allocated with no msaa
+                // See: ConfigureTargetTexture in PlayModeView.cs
+                return 1;
+            #else
+                // In the players, when URP main rendering is done to an intermediate target and NRP enabled
+                // we disable multisampling for the system backbuffer as a bandwidth optimization
+                // doing so, we avoid storing costly msaa samples back to system memory for nothing
+                bool canOptimizeScreenMSAASamples = UniversalRenderPipeline.canOptimizeScreenMSAASamples
+                                                 && useIntermediateColorTarget
+                                                 && renderGraph.nativeRenderPassesEnabled
+                                                 && Screen.msaaSamples > 1;
+                
+                if (canOptimizeScreenMSAASamples)
+                {
+                    Screen.SetMSAASamples(1);
+                }
+
+                // iOS and macOS corner case
+                bool screenAPIHasOneFrameDelay = (Application.platform == RuntimePlatform.OSXPlayer || Application.platform == RuntimePlatform.IPhonePlayer);
+
+                return screenAPIHasOneFrameDelay ? Mathf.Max(UniversalRenderPipeline.startFrameScreenMSAASamples, 1) : Mathf.Max(Screen.msaaSamples, 1);
+            #endif
         }
 
         internal static void SortStable(List<ScriptableRenderPass> list)

@@ -1,3 +1,4 @@
+#include_with_pragmas "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRenderingKeywords.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 #if defined(FOG_LINEAR) || defined(FOG_EXP) || defined(FOG_EXP2)
 #define USE_FOG 1
@@ -37,4 +38,8 @@
 #define CULL_VERTEX(o) return;
 #else
 #define CULL_VERTEX(o) { o.VFX_VARYING_POSCS.x = VFX_NAN; return o; }
+#endif
+
+#if HAS_STRIPS
+#define HAS_STRIPS_DATA 1
 #endif

@@ -3,6 +3,7 @@
 
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/UnityGBuffer.hlsl"
+#include "Packages/com.unity.shadergraph/ShaderGraphLibrary/Nature/SpeedTreeCommon.hlsl"
 #include "SpeedTreeUtility.hlsl"
 #if defined(LOD_FADE_CROSSFADE)
     #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/LODCrossFade.hlsl"
@@ -96,8 +97,26 @@ struct SpeedTreeFragmentInput
 
 void InitializeData(inout SpeedTreeVertexInput input, float lodValue)
 {
-#if defined(LOD_FADE_PERCENTAGE) && (!defined(LOD_FADE_CROSSFADE) && !defined(EFFECT_BILLBOARD))
-        input.vertex.xyz = lerp(input.vertex.xyz, input.texcoord2.xyz, lodValue);
+#if !defined(EFFECT_BILLBOARD)
+    #if defined(LOD_FADE_PERCENTAGE) && (!defined(LOD_FADE_CROSSFADE))
+    input.vertex.xyz = lerp(input.vertex.xyz, input.texcoord2.xyz, lodValue);
+    #endif
+
+    // geometry type
+    float geometryType = (int) (input.texcoord3.w + 0.25);
+    bool leafTwo = false;
+    if (geometryType > GEOM_TYPE_FACINGLEAF)
+    {
+        geometryType -= 2;
+        leafTwo = true;
+    }
+
+    // leaf facing
+    if (geometryType == GEOM_TYPE_FACINGLEAF)
+    {
+        float3 anchor = float3(input.texcoord1.zw, input.texcoord2.w);
+        input.vertex.xyz = DoLeafFacing(input.vertex.xyz, anchor);
+    }
 #endif
 
     // wind
@@ -117,14 +136,6 @@ void InitializeData(inout SpeedTreeVertexInput input, float lodValue)
             float3 windyPosition = input.vertex.xyz;
 
             #ifndef EFFECT_BILLBOARD
-                // geometry type
-                float geometryType = (int)(input.texcoord3.w + 0.25);
-                bool leafTwo = false;
-                if (geometryType > GEOM_TYPE_FACINGLEAF)
-                {
-                    geometryType -= 2;
-                    leafTwo = true;
-                }
 
                 // leaves
                 if (geometryType > GEOM_TYPE_FROND)
@@ -132,15 +143,7 @@ void InitializeData(inout SpeedTreeVertexInput input, float lodValue)
                     // remove anchor position
                     float3 anchor = float3(input.texcoord1.zw, input.texcoord2.w);
                     windyPosition -= anchor;
-
-                    if (geometryType == GEOM_TYPE_FACINGLEAF)
-                    {
-                        // face camera-facing leaf to camera
-                        float offsetLen = length(windyPosition);
-                        windyPosition = mul(windyPosition.xyz, (float3x3)UNITY_MATRIX_IT_MV); // inv(MV) * windyPosition
-                        windyPosition = normalize(windyPosition) * offsetLen; // make sure the offset vector is still scaled
-                    }
-
+                    
                     // leaf wind
                     #if defined(_WINDQUALITY_FAST) || defined(_WINDQUALITY_BETTER) || defined(_WINDQUALITY_BEST)
                         #ifdef _WINDQUALITY_BEST
@@ -275,7 +278,7 @@ SpeedTreeVertexOutput SpeedTree8Vert(SpeedTreeVertexInput input)
 
     output.clipPos = vertexInput.positionCS;
 
-    OUTPUT_SH4(vertexInput.positionWS, output.normalWS.xyz, GetWorldSpaceNormalizeViewDir(vertexInput.positionWS), output.vertexSH);
+    OUTPUT_SH4(vertexInput.positionWS, output.normalWS.xyz, GetWorldSpaceNormalizeViewDir(vertexInput.positionWS), output.vertexSH, output.probeOcclusion);
 
     return output;
 }
@@ -347,7 +350,9 @@ void InitializeInputData(SpeedTreeFragmentInput input, half3 normalTS, out Input
         GetAbsolutePositionWS(inputData.positionWS),
         inputData.normalWS,
         inputData.viewDirectionWS,
-        inputData.positionCS.xy);
+        inputData.positionCS.xy,
+        input.probeOcclusion,
+        inputData.shadowMask);
 #else
     inputData.bakedGI = SAMPLE_GI(NOT_USED, input.interpolated.vertexSH, inputData.normalWS);
 #endif

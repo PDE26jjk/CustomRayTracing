@@ -29,10 +29,11 @@ namespace UnityEngine.Rendering.Universal
 
         public void Render(RenderGraph graph, ContextContainer frameData, Renderer2DData rendererData, ref LayerBatch layerBatch, int batchIndex)
         {
-            if (!layerBatch.lightStats.useNormalMap)
+            Universal2DResourceData universal2DResourceData = frameData.Get<Universal2DResourceData>();
+
+            if (!layerBatch.useNormals)
                 return;
 
-            Universal2DResourceData universal2DResourceData = frameData.Get<Universal2DResourceData>();
             UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
             UniversalLightData lightData = frameData.Get<UniversalLightData>();

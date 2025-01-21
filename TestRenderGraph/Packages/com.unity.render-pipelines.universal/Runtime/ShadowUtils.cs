@@ -446,7 +446,7 @@ namespace UnityEngine.Rendering.Universal
                 normalBias *= kernelRadius;
             }
 
-            return new Vector4(depthBias, normalBias, 0.0f, 0.0f);
+            return new Vector4(depthBias, normalBias, (float)shadowLight.lightType, 0.0f);
         }
 
 
@@ -489,10 +489,6 @@ namespace UnityEngine.Rendering.Universal
             SetupShadowCasterConstantBuffer(CommandBufferHelpers.GetRasterCommandBuffer(cmd), ref shadowLight, shadowBias);
         }
 
-        private static int _ShadowBias = Shader.PropertyToID("_ShadowBias");
-        private static int _LightDirection = Shader.PropertyToID("_LightDirection");
-        private static int _LightPosition = Shader.PropertyToID("_LightPosition");
-
         internal static void SetupShadowCasterConstantBuffer(RasterCommandBuffer cmd, ref VisibleLight shadowLight, Vector4 shadowBias)
         {
             SetShadowBias(cmd, shadowBias);
@@ -508,17 +504,33 @@ namespace UnityEngine.Rendering.Universal
 
         internal static void SetShadowBias(RasterCommandBuffer cmd, Vector4 shadowBias)
         {
-            cmd.SetGlobalVector(_ShadowBias, shadowBias);
+            cmd.SetGlobalVector(ShaderPropertyId.shadowBias, shadowBias);
         }
 
         internal static void SetLightDirection(RasterCommandBuffer cmd, Vector3 lightDirection)
         {
-            cmd.SetGlobalVector(_LightDirection, new Vector4(lightDirection.x, lightDirection.y, lightDirection.z, 0.0f));
+            cmd.SetGlobalVector(ShaderPropertyId.lightDirection, new Vector4(lightDirection.x, lightDirection.y, lightDirection.z, 0.0f));
         }
 
         internal static void SetLightPosition(RasterCommandBuffer cmd, Vector3 lightPosition)
         {
-            cmd.SetGlobalVector(_LightPosition, new Vector4(lightPosition.x, lightPosition.y, lightPosition.z, 1.0f));
+            cmd.SetGlobalVector(ShaderPropertyId.lightPosition, new Vector4(lightPosition.x, lightPosition.y, lightPosition.z, 1.0f));
+        }
+
+        internal static void SetCameraPosition(RasterCommandBuffer cmd, Vector3 worldSpaceCameraPos)
+        {
+            cmd.SetGlobalVector(ShaderPropertyId.worldSpaceCameraPos, worldSpaceCameraPos);
+        }
+
+        internal static void SetWorldToCameraAndCameraToWorldMatrices(RasterCommandBuffer cmd, Matrix4x4 viewMatrix)
+        {
+            // There's an inconsistency in handedness between unity_matrixV and unity_WorldToCamera
+            // Unity changes the handedness of unity_WorldToCamera (see Camera::CalculateMatrixShaderProps)
+            // we will also change it here to avoid breaking existing shaders. (case 1257518)
+            Matrix4x4 worldToCameraMatrix = Matrix4x4.Scale(new Vector3(1.0f, 1.0f, -1.0f)) * viewMatrix;
+            Matrix4x4 cameraToWorldMatrix = worldToCameraMatrix.inverse;
+            cmd.SetGlobalMatrix(ShaderPropertyId.worldToCameraMatrix, worldToCameraMatrix);
+            cmd.SetGlobalMatrix(ShaderPropertyId.cameraToWorldMatrix, cameraToWorldMatrix);
         }
 
         private static RenderTextureDescriptor GetTemporaryShadowTextureDescriptor(int width, int height, int bits)
@@ -750,6 +762,14 @@ namespace UnityEngine.Rendering.Universal
         internal static bool FastApproximately(float a, float b)
         {
             return Mathf.Abs(a - b) < 0.000001f;
+        }
+
+        internal static bool FastApproximately(Vector4 a, Vector4 b)
+        {
+            return FastApproximately(a.x, b.x)
+                && FastApproximately(a.y, b.y)
+                && FastApproximately(a.z, b.z)
+                && FastApproximately(a.w, b.w);
         }
 
         internal const int kMinimumPunctualLightHardShadowResolution = 8;

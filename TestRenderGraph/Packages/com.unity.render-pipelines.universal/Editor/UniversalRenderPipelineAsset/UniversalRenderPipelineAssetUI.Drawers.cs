@@ -9,7 +9,7 @@ namespace UnityEditor.Rendering.Universal
 
     internal partial class UniversalRenderPipelineAssetUI
     {
-        enum Expandable
+        internal enum Expandable
         {
             Rendering = 1 << 1,
             Quality = 1 << 2,
@@ -39,15 +39,6 @@ namespace UnityEditor.Rendering.Universal
         internal static void UnregisterEditor(UniversalRenderPipelineAssetEditor editor)
         {
             k_AdditionalPropertiesState.UnregisterEditor(editor);
-        }
-
-        [SetAdditionalPropertiesVisibility]
-        internal static void SetAdditionalPropertiesVisibility(bool value)
-        {
-            if (value)
-                k_AdditionalPropertiesState.ShowAll();
-            else
-                k_AdditionalPropertiesState.HideAll();
         }
 
         static bool ValidateRendererGraphicsAPIsForLightLayers(UniversalRenderPipelineAsset pipelineAsset, out string unsupportedGraphicsApisMessage)
@@ -103,6 +94,11 @@ namespace UnityEditor.Rendering.Universal
         static readonly ExpandedState<Expandable, UniversalRenderPipelineAsset> k_ExpandedState = new(Expandable.Rendering, "URP");
         readonly static AdditionalPropertiesState<ExpandableAdditional, Light> k_AdditionalPropertiesState = new(0, "URP");
 
+        internal static void Expand(Expandable expandable, bool state)
+        {
+            k_ExpandedState[expandable] = state;
+        }
+
         public static readonly CED.IDrawer Inspector = CED.Group(
             CED.AdditionalPropertiesFoldoutGroup(Styles.renderingSettingsText, Expandable.Rendering, k_ExpandedState, ExpandableAdditional.Rendering, k_AdditionalPropertiesState, DrawRendering, DrawRenderingAdditional),
             CED.FoldoutGroup(Styles.qualitySettingsText, Expandable.Quality, k_ExpandedState, DrawQuality),
@@ -147,7 +143,6 @@ namespace UnityEditor.Rendering.Universal
                     ++EditorGUI.indentLevel;
                     serialized.smallMeshScreenPercentage.floatValue = Mathf.Clamp(EditorGUILayout.FloatField(Styles.smallMeshScreenPercentage, serialized.smallMeshScreenPercentage.floatValue), 0.0f, 20.0f);
                     EditorGUILayout.PropertyField(serialized.gpuResidentDrawerEnableOcclusionCullingInCameras, Styles.gpuResidentDrawerEnableOcclusionCullingInCameras);
-					EditorGUILayout.PropertyField(serialized.useLegacyLightmaps, Styles.useLegacyLightmaps);
                     --EditorGUI.indentLevel;
 
                     if (brgStrippingError)
@@ -617,6 +612,12 @@ namespace UnityEditor.Rendering.Universal
             serialized.colorGradingLutSize.intValue = Mathf.Clamp(serialized.colorGradingLutSize.intValue, UniversalRenderPipelineAsset.k_MinLutSize, UniversalRenderPipelineAsset.k_MaxLutSize);
             if (isHdrOn && serialized.colorGradingMode.intValue == (int)ColorGradingMode.HighDynamicRange && serialized.colorGradingLutSize.intValue < 32)
                 EditorGUILayout.HelpBox(Styles.colorGradingLutSizeWarning, MessageType.Warning);
+
+            HDRColorBufferPrecision hdrPrecision = (HDRColorBufferPrecision)serialized.hdrColorBufferPrecisionProp.intValue;
+            bool alphaEnabled = !isHdrOn /*RGBA8*/ || (isHdrOn && hdrPrecision == HDRColorBufferPrecision._64Bits); /*RGBA16Float*/
+            EditorGUILayout.PropertyField(serialized.allowPostProcessAlphaOutput, Styles.allowPostProcessAlphaOutput);
+            if(!alphaEnabled && serialized.allowPostProcessAlphaOutput.boolValue)
+                EditorGUILayout.HelpBox(Styles.alphaOutputWarning, MessageType.Warning);
 
             EditorGUILayout.PropertyField(serialized.useFastSRGBLinearConversion, Styles.useFastSRGBLinearConversion);
             EditorGUILayout.PropertyField(serialized.supportDataDrivenLensFlare, Styles.supportDataDrivenLensFlare);

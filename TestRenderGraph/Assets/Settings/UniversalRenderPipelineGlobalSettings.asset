@@ -54,9 +54,10 @@ MonoBehaviour:
       - rid: 6852985685364965394
       - rid: 8396008801501446144
       - rid: 8396008825996705792
+      - rid: 7671264520095924414
     m_RuntimeSettings:
       m_List: []
-  m_AssetVersion: 7
+  m_AssetVersion: 8
   m_ObsoleteDefaultVolumeProfile: {fileID: 0}
   m_RenderingLayerNames:
   - Light Layer default
@@ -113,6 +114,8 @@ MonoBehaviour:
         m_DefaultSpeedTree7Shader: {fileID: 4800000, guid: 0f4122b9a743b744abe2fb6a0a88868b,
           type: 3}
         m_DefaultSpeedTree8Shader: {fileID: -6465566751694194690, guid: 9920c1f1781549a46ba081a2a15a16ec,
+          type: 3}
+        m_DefaultSpeedTree9Shader: {fileID: -6465566751694194690, guid: cbd3e1cc4ae141c42a30e33b4d666a61,
           type: 3}
     - rid: 6852985685364965378
       type: {class: UniversalRendererResources, ns: UnityEngine.Rendering.Universal,
@@ -177,8 +180,7 @@ MonoBehaviour:
           type: 3}
         m_FallOffLookup: {fileID: 2800000, guid: 5688ab254e4c0634f8d6c8e0792331ca,
           type: 3}
-        m_DefaultCustomMaterial: {fileID: 2100000, guid: a97c105638bdf8b4a8650670310a4cd3,
-          type: 2}
+        m_CopyDepthPS: {fileID: 4800000, guid: d6dae50ee9e1bfa4db75f19f99355220, type: 3}
         m_DefaultLitMaterial: {fileID: 2100000, guid: a97c105638bdf8b4a8650670310a4cd3,
           type: 2}
         m_DefaultUnlitMaterial: {fileID: 2100000, guid: 9dfc825aed78fcd4ba02077103263b40,
@@ -249,13 +251,17 @@ MonoBehaviour:
           type: 3}
         voxelizeSceneShader: {fileID: 4800000, guid: c8b6a681c7b4e2e4785ffab093907f9e,
           type: 3}
-        traceVirtualOffsetCS: {fileID: 7200000, guid: 805f10d263aac4b4098c0279cd37a4f3,
+        traceVirtualOffsetCS: {fileID: -6772857160820960102, guid: ff2cbab5da58bf04d82c5f34037ed123,
           type: 3}
-        traceVirtualOffsetRT: {fileID: 4807578003741378534, guid: b60511f4aa1443f4d8c0b18f4fec92f4,
+        traceVirtualOffsetRT: {fileID: -5126288278712620388, guid: ff2cbab5da58bf04d82c5f34037ed123,
           type: 3}
-        skyOcclusionCS: {fileID: 7200000, guid: 798f52ec82fa04048a12826bbbbcf7b4,
+        skyOcclusionCS: {fileID: -6772857160820960102, guid: 5a2a534753fbdb44e96c3c78b5a6999d,
           type: 3}
-        skyOcclusionRT: {fileID: 4807578003741378534, guid: dfaf42b38dd001f49a72d8102b709f29,
+        skyOcclusionRT: {fileID: -5126288278712620388, guid: 5a2a534753fbdb44e96c3c78b5a6999d,
+          type: 3}
+        renderingLayerCS: {fileID: -6772857160820960102, guid: 94a070d33e408384bafc1dea4a565df9,
+          type: 3}
+        renderingLayerRT: {fileID: -5126288278712620388, guid: 94a070d33e408384bafc1dea4a565df9,
           type: 3}
     - rid: 6852985685364965389
       type: {class: ProbeVolumeGlobalSettings, ns: UnityEngine.Rendering, asm: Unity.RenderPipelines.Core.Runtime}
@@ -308,6 +314,12 @@ MonoBehaviour:
         m_version: 0
         m_EnableCompilationCaching: 1
         m_EnableValidityChecks: 1
+    - rid: 7671264520095924414
+      type: {class: RenderGraphUtilsResources, ns: UnityEngine.Rendering.RenderGraphModule.Util,
+        asm: Unity.RenderPipelines.Core.Runtime}
+      data:
+        m_Version: 0
+        m_CoreCopyPS: {fileID: 4800000, guid: 12dc59547ea167a4ab435097dd0f9add, type: 3}
     - rid: 8396008801501446144
       type: {class: UniversalRenderPipelineRuntimeXRResources, ns: UnityEngine.Rendering.Universal,
         asm: Unity.RenderPipelines.Universal.Runtime}
@@ -316,12 +328,14 @@ MonoBehaviour:
           type: 3}
         m_xrMirrorViewPS: {fileID: 4800000, guid: d5a307c014552314b9f560906d708772,
           type: 3}
+        m_xrMotionVector: {fileID: 4800000, guid: f89aac1e4f84468418fe30e611dff395,
+          type: 3}
     - rid: 8396008825996705792
       type: {class: RayTracingResources, ns: , asm: Assembly-CSharp}
       data:
-        blitShader: {fileID: 4800000, guid: 7404c7f6f586c8e4d85cd1d713afd965, type: 3}
-        debugBlitShader: {fileID: 4800000, guid: 64e73f80111f74e4faacfb0af7e0673d,
+        blitShader: {fileID: 4800000, guid: 9d91f271f229ab4448fb8e04f4e1acd2, type: 3}
+        debugBlitShader: {fileID: 4800000, guid: 42cca5b4c2ad1774db968df361209f5f,
           type: 3}
-        m_PathTracingRT: {fileID: 4807578003741378534, guid: 3c75600b352173f40a820b3de4f51f25,
+        m_PathTracingRT: {fileID: 4807578003741378534, guid: 825792d3f21528e44adb193ac114ce84,
           type: 3}
-        m_ReSTIRCS: {fileID: 7200000, guid: a3355ec535d260f4483a3fa8661fe25c, type: 3}
+        m_ReSTIRCS: {fileID: 7200000, guid: 3d6b3064379b5e148b6684834bdddede, type: 3}

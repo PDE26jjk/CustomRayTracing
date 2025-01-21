@@ -57,7 +57,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile _ _LIGHT_LAYERS
             #pragma multi_compile _ _FORWARD_PLUS
-            #pragma multi_compile_vertex LOD_FADE_PERCENTAGE
+            #pragma multi_compile LOD_FADE_PERCENTAGE
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
             #pragma multi_compile_fragment _ _REFLECTION_PROBE_BLENDING
             #pragma multi_compile_fragment _ _REFLECTION_PROBE_BOX_PROJECTION
@@ -75,12 +75,12 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_instancing
             #pragma instancing_options renderinglayer assumeuniformscaling maxcount:50
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BILLBOARD
-            #pragma shader_feature_local EFFECT_HUE_VARIATION
-            #pragma shader_feature_local EFFECT_SUBSURFACE
             #pragma shader_feature_local EFFECT_BUMP
-            #pragma shader_feature_local EFFECT_EXTRA_TEX
+            #pragma shader_feature_local_fragment EFFECT_HUE_VARIATION
+            #pragma shader_feature_local_fragment EFFECT_SUBSURFACE
+            #pragma shader_feature_local_fragment EFFECT_EXTRA_TEX
 
             #define ENABLE_WIND
             #define EFFECT_BACKSIDE_NORMALS
@@ -106,7 +106,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_instancing
             #pragma instancing_options assumeuniformscaling maxcount:50
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BILLBOARD
 
             #define ENABLE_WIND
@@ -141,7 +141,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_fragment _ _REFLECTION_PROBE_BOX_PROJECTION
             #pragma multi_compile_fragment _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
             #pragma multi_compile _ LOD_FADE_CROSSFADE
-            #pragma multi_compile_vertex LOD_FADE_PERCENTAGE
+            #pragma multi_compile LOD_FADE_PERCENTAGE
             #pragma multi_compile_fragment _ _GBUFFER_NORMALS_OCT
             #pragma multi_compile_fragment _ _RENDER_PASS_ENABLED
             #include_with_pragmas "Packages/com.unity.render-pipelines.universal/ShaderLibrary/ProbeVolumeVariants.hlsl"
@@ -150,12 +150,12 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_instancing
             #pragma instancing_options renderinglayer assumeuniformscaling maxcount:50
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BILLBOARD
-            #pragma shader_feature_local EFFECT_HUE_VARIATION
-            #pragma shader_feature_local EFFECT_SUBSURFACE
             #pragma shader_feature_local EFFECT_BUMP
-            #pragma shader_feature_local EFFECT_EXTRA_TEX
+            #pragma shader_feature_local_fragment EFFECT_HUE_VARIATION
+            #pragma shader_feature_local_fragment EFFECT_SUBSURFACE
+            #pragma shader_feature_local_fragment EFFECT_EXTRA_TEX
 
             #define ENABLE_WIND
             #define EFFECT_BACKSIDE_NORMALS
@@ -184,7 +184,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_instancing
             #pragma instancing_options assumeuniformscaling maxcount:50
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BILLBOARD
 
             #define ENABLE_WIND
@@ -220,7 +220,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma multi_compile_instancing
             #pragma instancing_options assumeuniformscaling maxcount:50
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BILLBOARD
 
             #define ENABLE_WIND
@@ -244,7 +244,7 @@ Shader "Universal Render Pipeline/Nature/SpeedTree8"
             #pragma vertex SpeedTree8VertDepthNormal
             #pragma fragment SpeedTree8FragDepthNormal
 
-            #pragma shader_feature_local _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
+            #pragma shader_feature_local_vertex _WINDQUALITY_NONE _WINDQUALITY_FAST _WINDQUALITY_BETTER _WINDQUALITY_BEST _WINDQUALITY_PALM
             #pragma shader_feature_local EFFECT_BUMP
 
             #pragma multi_compile _ LOD_FADE_CROSSFADE

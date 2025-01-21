@@ -16,22 +16,26 @@ namespace UnityEngine.Rendering.Universal
         public const string k_MotionVectorsLightModeTag = "MotionVectors";
         static readonly string[] s_ShaderTags = new string[] { k_MotionVectorsLightModeTag };
 
-        private static readonly ProfilingSampler s_SetMotionMatrixProfilingSampler = new ProfilingSampler("SetMotionVectorGlobalMatrices");
+        static readonly int s_CameraDepthTextureID = Shader.PropertyToID("_CameraDepthTexture");
+        static readonly ProfilingSampler s_SetMotionMatrixProfilingSampler = new ProfilingSampler("Set Motion Vector Global Matrices");
 
         RTHandle m_Color;
         RTHandle m_Depth;
         readonly Material m_CameraMaterial;
+        readonly FilteringSettings m_FilteringSettings;
 
         private PassData m_PassData;
         #endregion
 
         #region Constructors
-        internal MotionVectorRenderPass(Material cameraMaterial)
+        internal MotionVectorRenderPass(RenderPassEvent evt, Material cameraMaterial, LayerMask opaqueLayerMask)
+
         {
-            renderPassEvent = RenderPassEvent.BeforeRenderingPostProcessing;
+            profilingSampler = ProfilingSampler.Get(URPProfileId.DrawMotionVectors);
+            renderPassEvent = evt;
             m_CameraMaterial = cameraMaterial;
+            m_FilteringSettings = new FilteringSettings(RenderQueueRange.opaque,opaqueLayerMask);
             m_PassData = new PassData();
-            base.profilingSampler = ProfilingSampler.Get(URPProfileId.MotionVectors);
 
             ConfigureInput(ScriptableRenderPassInput.Depth);
         }
@@ -79,18 +83,14 @@ namespace UnityEngine.Rendering.Universal
             // Never draw in Preview
             if (camera.cameraType == CameraType.Preview)
                 return;
+           
+            // These flags are still required in SRP or the engine won't compute previous model matrices...
+            // If the flag hasn't been set yet on this camera, motion vectors will skip a frame.
+            camera.depthTextureMode |= DepthTextureMode.MotionVectors | DepthTextureMode.Depth;
 
-            // Profiling command
-            using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.MotionVectors)))
-            {
-                // These flags are still required in SRP or the engine won't compute previous model matrices...
-                // If the flag hasn't been set yet on this camera, motion vectors will skip a frame.
-                camera.depthTextureMode |= DepthTextureMode.MotionVectors | DepthTextureMode.Depth;
-
-                // TODO: add option to only draw either one?
-                DrawCameraMotionVectors(cmd, passData.xr, cameraMaterial);
-                DrawObjectMotionVectors(cmd, passData.xr, ref rendererList);
-            }
+            // TODO: add option to only draw either one?
+            DrawCameraMotionVectors(cmd, passData.xr, cameraMaterial);
+            DrawObjectMotionVectors(cmd, passData.xr, ref rendererList);            
         }
 
         [Obsolete(DeprecationMessage.CompatibilityScriptingAPIObsolete, false)]
@@ -100,11 +100,18 @@ namespace UnityEngine.Rendering.Universal
             UniversalRenderingData universalRenderingData = frameData.Get<UniversalRenderingData>();
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
 
-            InitPassData(ref m_PassData, cameraData);
+            var cmd = CommandBufferHelpers.GetRasterCommandBuffer(renderingData.commandBuffer);
 
-            InitRendererLists(ref m_PassData, ref universalRenderingData.cullResults, universalRenderingData.supportsDynamicBatching,
-                context, default(RenderGraph), false);
-            ExecutePass(CommandBufferHelpers.GetRasterCommandBuffer(renderingData.commandBuffer), m_PassData, m_PassData.rendererList);
+            // Profiling command
+            using (new ProfilingScope(cmd,profilingSampler))
+            {
+                InitPassData(ref m_PassData, cameraData);
+
+                InitRendererLists(ref m_PassData, ref universalRenderingData.cullResults, universalRenderingData.supportsDynamicBatching,
+                    context, default(RenderGraph), false);
+
+                ExecutePass(cmd, m_PassData, m_PassData.rendererList);
+            }
         }
 
         private static DrawingSettings GetDrawingSettings(Camera camera, bool supportsDynamicBatching)
@@ -131,6 +138,7 @@ namespace UnityEngine.Rendering.Universal
 #if ENABLE_VR && ENABLE_XR_MODULE
             bool foveatedRendering = xr.supportsFoveatedRendering;
             bool nonUniformFoveatedRendering = foveatedRendering && XRSystem.foveatedRenderingCaps.HasFlag(FoveatedRenderingCaps.NonUniformRaster);
+
             if (foveatedRendering)
             {
                 if (nonUniformFoveatedRendering)
@@ -198,12 +206,11 @@ namespace UnityEngine.Rendering.Universal
         private void InitRendererLists(ref PassData passData, ref CullingResults cullResults, bool supportsDynamicBatching, ScriptableRenderContext context, RenderGraph renderGraph, bool useRenderGraph)
         {
             var drawingSettings = GetDrawingSettings(passData.camera, supportsDynamicBatching);
-            var filteringSettings = new FilteringSettings(RenderQueueRange.opaque, passData.camera.cullingMask);
             var renderStateBlock = new RenderStateBlock(RenderStateMask.Nothing);
             if (useRenderGraph)
-                RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref cullResults, drawingSettings, filteringSettings, renderStateBlock, ref passData.rendererListHdl);
+                RenderingUtils.CreateRendererListWithRenderStateBlock(renderGraph, ref cullResults, drawingSettings, m_FilteringSettings, renderStateBlock, ref passData.rendererListHdl);
             else
-                RenderingUtils.CreateRendererListWithRenderStateBlock(context, ref cullResults, drawingSettings, filteringSettings, renderStateBlock, ref passData.rendererList);
+                RenderingUtils.CreateRendererListWithRenderStateBlock(context, ref cullResults, drawingSettings, m_FilteringSettings, renderStateBlock, ref passData.rendererList);
         }
 
         internal void Render(RenderGraph renderGraph, ContextContainer frameData, TextureHandle cameraDepthTexture, TextureHandle motionVectorColor, TextureHandle motionVectorDepth)
@@ -211,14 +218,15 @@ namespace UnityEngine.Rendering.Universal
             UniversalRenderingData renderingData = frameData.Get<UniversalRenderingData>();
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
 
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("Motion Vector Pass", out var passData, base.profilingSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
                 builder.UseAllGlobalTextures(true);
 
                 //  TODO RENDERGRAPH: culling? force culling off for testing
                 builder.AllowPassCulling(false);
                 builder.AllowGlobalStateModification(true);
-                builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering);
+                if (cameraData.xr.enabled)
+                    builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering && cameraData.xrUniversal.canFoveateIntermediatePasses);
 
                 passData.motionVectorColor = motionVectorColor;
                 builder.SetRenderAttachment(motionVectorColor, 0, AccessFlags.Write);
@@ -239,6 +247,9 @@ namespace UnityEngine.Rendering.Universal
 
                 builder.SetRenderFunc((PassData data, RasterGraphContext context) =>
                 {
+                    if (data.cameraMaterial != null)
+                        data.cameraMaterial.SetTexture(s_CameraDepthTextureID, data.cameraDepth);
+
                     ExecutePass(context.cmd, data, data.rendererListHdl);
                 });
             }
@@ -264,7 +275,7 @@ namespace UnityEngine.Rendering.Universal
         {
             if (cameraData.camera.TryGetComponent<UniversalAdditionalCameraData>(out var additionalCameraData))
             {
-                using (var builder = renderGraph.AddRasterRenderPass<MotionMatrixPassData>("SetMotionVectorGlobalMatrices", out var passData, s_SetMotionMatrixProfilingSampler))
+                using (var builder = renderGraph.AddRasterRenderPass<MotionMatrixPassData>(s_SetMotionMatrixProfilingSampler.name, out var passData, s_SetMotionMatrixProfilingSampler))
                 {
                     passData.motionData = additionalCameraData.motionVectorsPersistentData;
                     passData.xr = cameraData.xr;

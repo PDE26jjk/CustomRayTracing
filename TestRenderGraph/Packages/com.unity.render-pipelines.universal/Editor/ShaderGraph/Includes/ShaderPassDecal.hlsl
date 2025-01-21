@@ -89,20 +89,24 @@ void InitializeInputData(Varyings input, float3 positionWS, half3 normalWS, half
 
 #if defined(VARYINGS_NEED_DYNAMIC_LIGHTMAP_UV) && defined(DYNAMICLIGHTMAP_ON)
     inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.dynamicLightmapUV.xy, half3(input.sh), normalWS);
+    #if defined(VARYINGS_NEED_STATIC_LIGHTMAP_UV)
+    inputData.shadowMask = SAMPLE_SHADOWMASK(input.staticLightmapUV);
+    #endif
 #elif defined(VARYINGS_NEED_STATIC_LIGHTMAP_UV)
 #if !defined(LIGHTMAP_ON) && (defined(PROBE_VOLUMES_L1) || defined(PROBE_VOLUMES_L2))
     inputData.bakedGI = SAMPLE_GI(input.sh,
         GetAbsolutePositionWS(inputData.positionWS),
         inputData.normalWS,
         inputData.viewDirectionWS,
-        input.positionCS.xy);
+        input.positionCS.xy,
+        input.probeOcclusion,
+        inputData.shadowMask);
 #else
     inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, half3(input.sh), normalWS);
-#endif
-#endif
-
-#if defined(VARYINGS_NEED_STATIC_LIGHTMAP_UV)
+    #if defined(VARYINGS_NEED_STATIC_LIGHTMAP_UV)
     inputData.shadowMask = SAMPLE_SHADOWMASK(input.staticLightmapUV);
+    #endif
+#endif
 #endif
 
     #if defined(DEBUG_DISPLAY)
@@ -113,6 +117,9 @@ void InitializeInputData(Varyings input, float3 positionWS, half3 normalWS, half
     inputData.staticLightmapUV = input.staticLightmapUV;
     #elif defined(VARYINGS_NEED_SH)
     inputData.vertexSH = input.sh;
+    #endif
+    #if defined(USE_APV_PROBE_OCCLUSION)
+    inputData.probeOcclusion = input.probeOcclusion;
     #endif
     #endif
 
@@ -244,14 +251,7 @@ void Frag(PackedVaryings packedInput,
     half3 normalWS = half3(LoadSceneNormals(positionCS.xy));
 #endif
 
-    float2 positionSS = input.positionCS.xy * _ScreenSize.zw;
-
-#if defined(SUPPORTS_FOVEATED_RENDERING_NON_UNIFORM_RASTER)
-    UNITY_BRANCH if (_FOVEATED_RENDERING_NON_UNIFORM_RASTER)
-    {
-        positionSS = RemapFoveatedRenderingNonUniformToLinearCS(input.positionCS.xy, true) * _ScreenSize.zw;
-    }
-#endif
+    float2 positionSS = FoveatedRemapNonUniformToLinearCS(input.positionCS.xy) * _ScreenSize.zw;
 
 #ifdef DECAL_PROJECTOR
     float3 positionWS = ComputeWorldSpacePosition(positionSS, depth, UNITY_MATRIX_I_VP);

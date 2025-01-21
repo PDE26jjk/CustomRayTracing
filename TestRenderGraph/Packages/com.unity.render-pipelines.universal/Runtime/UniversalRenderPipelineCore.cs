@@ -387,6 +387,11 @@ namespace UnityEngine.Rendering.Universal
         public ref bool allowHDROutput => ref frameData.Get<UniversalCameraData>().allowHDROutput;
 
         /// <summary>
+        /// True if this camera writes the alpha channel. Requires to color target to have an alpha channel.
+        /// </summary>
+        public ref bool isAlphaOutputEnabled => ref frameData.Get<UniversalCameraData>().isAlphaOutputEnabled;
+
+        /// <summary>
         /// True if this camera requires to write _CameraDepthTexture.
         /// </summary>
         public ref bool requiresDepthTexture => ref frameData.Get<UniversalCameraData>().requiresDepthTexture;
@@ -589,7 +594,7 @@ namespace UnityEngine.Rendering.Universal
         /// <summary>
         /// Persistent TAA data, primarily for the accumulation texture.
         /// </summary>
-        internal ref TemporalAA.PersistentData taaPersistentData => ref frameData.Get<UniversalCameraData>().taaPersistentData;
+        internal ref TaaHistory taaHistory => ref frameData.Get<UniversalCameraData>().taaHistory;
 
         // TAA settings.
         internal ref TemporalAA.Settings taaSettings => ref frameData.Get<UniversalCameraData>().taaSettings;
@@ -849,6 +854,10 @@ namespace UnityEngine.Rendering.Universal
         public static readonly int worldToCameraMatrix = Shader.PropertyToID("unity_WorldToCamera");
         public static readonly int cameraToWorldMatrix = Shader.PropertyToID("unity_CameraToWorld");
 
+        public static readonly int shadowBias = Shader.PropertyToID("_ShadowBias");
+        public static readonly int lightDirection = Shader.PropertyToID("_LightDirection");
+        public static readonly int lightPosition = Shader.PropertyToID("_LightPosition");
+
         public static readonly int cameraWorldClipPlanes = Shader.PropertyToID("unity_CameraWorldClipPlanes");
 
         public static readonly int billboardNormal = Shader.PropertyToID("unity_BillboardNormal");
@@ -1004,6 +1013,7 @@ namespace UnityEngine.Rendering.Universal
         public static GlobalKeyword ProbeVolumeL2;
         public static GlobalKeyword _OUTPUT_DEPTH;
         public static GlobalKeyword LinearToSRGBConversion;
+        public static GlobalKeyword _ENABLE_ALPHA_OUTPUT;
 
         // TODO: Move following keywords to Local keywords?
         // https://docs.unity3d.com/ScriptReference/Rendering.LocalKeyword.html
@@ -1111,6 +1121,7 @@ namespace UnityEngine.Rendering.Universal
             ShaderGlobalKeywords.ProbeVolumeL2 = GlobalKeyword.Create(ShaderKeywordStrings.ProbeVolumeL2);
             ShaderGlobalKeywords._OUTPUT_DEPTH = GlobalKeyword.Create(ShaderKeywordStrings._OUTPUT_DEPTH);
             ShaderGlobalKeywords.LinearToSRGBConversion = GlobalKeyword.Create(ShaderKeywordStrings.LinearToSRGBConversion);
+            ShaderGlobalKeywords._ENABLE_ALPHA_OUTPUT = GlobalKeyword.Create(ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT);
         }
     }
 
@@ -1251,9 +1262,6 @@ namespace UnityEngine.Rendering.Universal
         /// <summary> Keyword used for high quality Bloom dirt. </summary>
         public const string BloomHQDirt = "_BLOOM_HQ_DIRT";
 
-        /// <summary> Keyword used for RGBM format for Bloom. </summary>
-        public const string UseRGBM = "_USE_RGBM";
-
         /// <summary> Keyword used for Distortion. </summary>
         public const string Distortion = "_DISTORTION";
 
@@ -1262,6 +1270,9 @@ namespace UnityEngine.Rendering.Universal
 
         /// <summary> Keyword used for HDR Color Grading. </summary>
         public const string HDRGrading = "_HDR_GRADING";
+
+        /// <summary> Keyword used for HDR UI Overlay compositing. </summary>
+        public const string HDROverlay = "_HDR_OVERLAY";
 
         /// <summary> Keyword used for ACES Tonemapping. </summary>
         public const string TonemapACES = "_TONEMAP_ACES";
@@ -1424,6 +1435,9 @@ namespace UnityEngine.Rendering.Universal
 
         /// <summary> Keyword used for CopyDepth pass. </summary>
         public const string _OUTPUT_DEPTH = "_OUTPUT_DEPTH";
+
+        /// <summary> Keyword used for enable alpha output. Used in post processing. </summary>
+        public const string _ENABLE_ALPHA_OUTPUT = "_ENABLE_ALPHA_OUTPUT";
     }
 
     public sealed partial class UniversalRenderPipeline
@@ -1511,21 +1525,16 @@ namespace UnityEngine.Rendering.Universal
                 return GraphicsFormat.R8G8B8A8_UNorm;
         }
 
-        static RenderTextureDescriptor CreateRenderTextureDescriptor(Camera camera, float renderScale,
+        internal static RenderTextureDescriptor CreateRenderTextureDescriptor(Camera camera, UniversalCameraData cameraData,
             bool isHdrEnabled, HDRColorBufferPrecision requestHDRColorBufferPrecision, int msaaSamples, bool needsAlpha, bool requiresOpaqueTexture)
         {
-            int scaledWidth = (int)((float)camera.pixelWidth * renderScale);
-            int scaledHeight = (int)((float)camera.pixelHeight * renderScale);
-
             RenderTextureDescriptor desc;
 
             if (camera.targetTexture == null)
             {
-                desc = new RenderTextureDescriptor(camera.pixelWidth, camera.pixelHeight);
-                desc.width = scaledWidth;
-                desc.height = scaledHeight;
+                desc = new RenderTextureDescriptor(cameraData.scaledWidth, cameraData.scaledHeight);
                 desc.graphicsFormat = MakeRenderTextureGraphicsFormat(isHdrEnabled, requestHDRColorBufferPrecision, needsAlpha);
-                desc.depthBufferBits = 32;
+                desc.depthStencilFormat = SystemInfo.GetGraphicsFormat(DefaultFormat.DepthStencil);
                 desc.msaaSamples = msaaSamples;
                 desc.sRGB = (QualitySettings.activeColorSpace == ColorSpace.Linear);
             }
@@ -1533,8 +1542,8 @@ namespace UnityEngine.Rendering.Universal
             {
                 desc = camera.targetTexture.descriptor;
                 desc.msaaSamples = msaaSamples;
-                desc.width = scaledWidth;
-                desc.height = scaledHeight;
+                desc.width = cameraData.scaledWidth;
+                desc.height = cameraData.scaledHeight;
 
                 if (camera.cameraType == CameraType.SceneView && !isHdrEnabled)
                 {
@@ -1546,10 +1555,6 @@ namespace UnityEngine.Rendering.Universal
                 // RenderTextureFormats available resolves in a black render texture when no warning or error
                 // is given.
             }
-
-            // Make sure dimension is non zero
-            desc.width = Mathf.Max(1, desc.width);
-            desc.height = Mathf.Max(1, desc.height);
 
             desc.enableRandomWrite = false;
             desc.bindMS = false;
@@ -1849,7 +1854,7 @@ namespace UnityEngine.Rendering.Universal
         ColorGradingLUT,
         CopyColor,
         CopyDepth,
-        DepthNormalPrepass,
+        DrawDepthNormalPrepass,
         DepthPrepass,
         UpdateReflectionProbeAtlas,
 
@@ -1883,7 +1888,7 @@ namespace UnityEngine.Rendering.Universal
         LensFlareDataDrivenComputeOcclusion,
         LensFlareDataDriven,
         LensFlareScreenSpace,
-        MotionVectors,
+        DrawMotionVectors,
         DrawFullscreen,
 
         // PostProcessPass RenderGraph
@@ -1914,13 +1919,14 @@ namespace UnityEngine.Rendering.Universal
         [HideInDebugUI] RG_FinalFSRScale,
         [HideInDebugUI] RG_FinalBlit,
 
-        FinalBlit
+        BlitFinalToBackBuffer,
+        DrawSkybox
     }
 
     // Internal class to detect and cache runtime platform information.
-    // TODO: refine the logic to provide platform abstraction. Eg, we should devide platforms based on capabilities and perf budget.
-    // TODO: isXRMobile is a bad catagory. Alignment and refactor needed.
-    // TODO: Compress all the query data into "isXRMobile" style bools and enums.
+    // TODO: refine the logic to provide platform abstraction. Eg, we should divide platforms based on capabilities and perf budget.
+    // TODO: isXRMobile is a bad category. Alignment and refactor needed.
+    // TODO: Compress all the query data into "isXRMobile" style booleans and enums.
     internal static class PlatformAutoDetect
     {
         /// <summary>
@@ -1929,17 +1935,19 @@ namespace UnityEngine.Rendering.Universal
         internal static void Initialize()
         {
             bool isRunningMobile = false;
-#if ENABLE_VR && ENABLE_VR_MODULE
-#if PLATFORM_WINRT || PLATFORM_ANDROID
-            isRunningMobile = IsRunningXRMobile();
-#endif
-#endif
+            #if ENABLE_VR && ENABLE_VR_MODULE
+                #if PLATFORM_WINRT || PLATFORM_ANDROID
+                    isRunningMobile = IsRunningXRMobile();
+                #endif
+            #endif
+
             isXRMobile = isRunningMobile;
             isShaderAPIMobileDefined = GraphicsSettings.HasShaderDefine(BuiltinShaderDefine.SHADER_API_MOBILE);
+            isSwitch = Application.platform == RuntimePlatform.Switch;
         }
 
 #if ENABLE_VR && ENABLE_VR_MODULE
-#if PLATFORM_WINRT || PLATFORM_ANDROID
+    #if PLATFORM_WINRT || PLATFORM_ANDROID
         // XR mobile platforms are not treated as dedicated mobile platforms in Core. Handle them specially here. (Quest and HL).
         private static List<XR.XRDisplaySubsystem> displaySubsystemList = new List<XR.XRDisplaySubsystem>();
         private static bool IsRunningXRMobile()
@@ -1958,7 +1966,7 @@ namespace UnityEngine.Rendering.Universal
             }
             return false;
         }
-#endif
+    #endif
 #endif
 
         /// <summary>
@@ -1972,6 +1980,11 @@ namespace UnityEngine.Rendering.Universal
         internal static bool isShaderAPIMobileDefined { get; private set; } = false;
 
         /// <summary>
+        /// If true, then the runtime platform is set to Switch.
+        /// </summary>
+        internal static bool isSwitch { get; private set; } = false;
+
+        /// <summary>
         /// Gives the SH evaluation mode when set to automatically detect.
         /// </summary>
         /// <param name="mode">The current SH evaluation mode.</param>
@@ -1980,7 +1993,7 @@ namespace UnityEngine.Rendering.Universal
         {
             if (mode == ShEvalMode.Auto)
             {
-                if (PlatformAutoDetect.isXRMobile)
+                if (isXRMobile || isShaderAPIMobileDefined || isSwitch)
                     return ShEvalMode.PerVertex;
                 else
                     return ShEvalMode.PerPixel;
@@ -1988,5 +2001,7 @@ namespace UnityEngine.Rendering.Universal
 
             return mode;
         }
+
+        internal static bool isRunningOnPowerVRGPU = SystemInfo.graphicsDeviceName.Contains("PowerVR");
     }
 }

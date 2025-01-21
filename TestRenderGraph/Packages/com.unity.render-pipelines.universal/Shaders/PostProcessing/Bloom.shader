@@ -1,8 +1,6 @@
 Shader "Hidden/Universal Render Pipeline/Bloom"
 {
     HLSLINCLUDE
-        #pragma multi_compile_local _ _USE_RGBM
-
         #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
         #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Filtering.hlsl"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -24,30 +22,34 @@ Shader "Hidden/Universal Render Pipeline/Bloom"
 
         half4 EncodeHDR(half3 color)
         {
-        #if _USE_RGBM
-            half4 outColor = EncodeRGBM(color);
-        #else
-            half4 outColor = half4(color, 1.0);
+        #if UNITY_COLORSPACE_GAMMA
+            color = sqrt(color); // linear to γ
         #endif
 
-        #if UNITY_COLORSPACE_GAMMA
-            return half4(sqrt(outColor.xyz), outColor.w); // linear to γ
-        #else
-            return outColor;
-        #endif
+            return half4(color, 1.0);
         }
 
-        half3 DecodeHDR(half4 color)
+        half3 DecodeHDR(half4 data)
         {
+            half3 color = data.xyz;
+
         #if UNITY_COLORSPACE_GAMMA
-            color.xyz *= color.xyz; // γ to linear
+            color *= color; // γ to linear
         #endif
 
-        #if _USE_RGBM
-            return DecodeRGBM(color);
-        #else
+            return color;
+        }
+
+        half3 SamplePrefilter(float2 uv,  float2 offset)
+        {
+            float2 texelSize = _BlitTexture_TexelSize.xy;
+            half4 color = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * offset);
+            #if _ENABLE_ALPHA_OUTPUT
+                // When alpha is enabled, regions with zero alpha should not generate any bloom / glow. Therefore we pre-multipy the color with the alpha channel here and the rest
+                // of the computations remain float3. Still, when bloom is applied to the final image, bloom will still be spread on regions with zero alpha (see UberPost.compute)
+                color.xyz *= color.w;
+            #endif
             return color.xyz;
-        #endif
         }
 
         half4 FragPrefilter(Varyings input) : SV_Target
@@ -63,32 +65,29 @@ Shader "Hidden/Universal Render Pipeline/Bloom"
 #endif
 
         #if _BLOOM_HQ
-            float texelSize = _BlitTexture_TexelSize.x;
-            half4 A = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(-1.0, -1.0));
-            half4 B = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(0.0, -1.0));
-            half4 C = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(1.0, -1.0));
-            half4 D = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(-0.5, -0.5));
-            half4 E = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(0.5, -0.5));
-            half4 F = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(-1.0, 0.0));
-            half4 G = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv);
-            half4 H = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(1.0, 0.0));
-            half4 I = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(-0.5, 0.5));
-            half4 J = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(0.5, 0.5));
-            half4 K = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(-1.0, 1.0));
-            half4 L = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(0.0, 1.0));
-            half4 M = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + texelSize * float2(1.0, 1.0));
+            half3 A = SamplePrefilter(uv, float2(-1.0, -1.0));
+            half3 B = SamplePrefilter(uv, float2( 0.0, -1.0));
+            half3 C = SamplePrefilter(uv, float2( 1.0, -1.0));
+            half3 D = SamplePrefilter(uv, float2(-0.5, -0.5));
+            half3 E = SamplePrefilter(uv, float2( 0.5, -0.5));
+            half3 F = SamplePrefilter(uv, float2(-1.0,  0.0));
+            half3 G = SamplePrefilter(uv, float2( 0.0,  0.0));
+            half3 H = SamplePrefilter(uv, float2( 1.0,  0.0));
+            half3 I = SamplePrefilter(uv, float2(-0.5,  0.5));
+            half3 J = SamplePrefilter(uv, float2( 0.5,  0.5));
+            half3 K = SamplePrefilter(uv, float2(-1.0,  1.0));
+            half3 L = SamplePrefilter(uv, float2( 0.0,  1.0));
+            half3 M = SamplePrefilter(uv, float2( 1.0,  1.0));
 
             half2 div = (1.0 / 4.0) * half2(0.5, 0.125);
 
-            half4 o = (D + E + I + J) * div.x;
-            o += (A + B + G + F) * div.y;
-            o += (B + C + H + G) * div.y;
-            o += (F + G + L + K) * div.y;
-            o += (G + H + M + L) * div.y;
-
-            half3 color = o.xyz;
+            half3 color = (D + E + I + J) * div.x;
+            color += (A + B + G + F) * div.y;
+            color += (B + C + H + G) * div.y;
+            color += (F + G + L + K) * div.y;
+            color += (G + H + M + L) * div.y;
         #else
-            half3 color = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv).xyz;
+            half3 color = SamplePrefilter(uv, float2(0,0));
         #endif
 
             // User controlled clamp to limit crazy high broken spec
@@ -185,7 +184,8 @@ Shader "Hidden/Universal Render Pipeline/Bloom"
             HLSLPROGRAM
                 #pragma vertex Vert
                 #pragma fragment FragPrefilter
-                #pragma multi_compile_local _ _BLOOM_HQ
+                #pragma multi_compile_local_fragment _ _BLOOM_HQ
+                #pragma multi_compile_fragment _ _ENABLE_ALPHA_OUTPUT
             ENDHLSL
         }
 
@@ -216,7 +216,7 @@ Shader "Hidden/Universal Render Pipeline/Bloom"
             HLSLPROGRAM
                 #pragma vertex Vert
                 #pragma fragment FragUpsample
-                #pragma multi_compile_local _ _BLOOM_HQ
+                #pragma multi_compile_local_fragment _ _BLOOM_HQ
             ENDHLSL
         }
     }

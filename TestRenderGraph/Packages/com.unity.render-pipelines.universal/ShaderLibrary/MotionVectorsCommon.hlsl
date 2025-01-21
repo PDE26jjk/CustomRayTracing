@@ -3,14 +3,9 @@
 
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRendering.hlsl"
 
-// This is required to avoid artifacts ("gaps" in the _MotionVectorTexture) on some platform
+// 6000.0 Deprecated. This is for backwards compatibility. Remove in the future.
 void ApplyMotionVectorZBias(inout float4 positionCS)
 {
-    #if defined(UNITY_REVERSED_Z)
-    positionCS.z -= unity_MotionVectorsParams.z * positionCS.w;
-    #else
-    positionCS.z += unity_MotionVectorsParams.z * positionCS.w;
-    #endif
 }
 
 float2 CalcNdcMotionVectorFromCsPositions(float4 posCS, float4 prevPosCS)
@@ -57,4 +52,17 @@ float2 CalcNdcMotionVectorFromCsPositions(float4 posCS, float4 prevPosCS)
     return velocity;
 }
 
+// Same as CalcNdcMotionVectorFromCsPositions but returns vec3 ndc space motion vector.
+// Also Application SpaceWarp does not support non-uniform foveated rendering so the relevant foveated rendering code is not in this variant.
+float3 CalcAswNdcMotionVectorFromCsPositions(float4 posCS, float4 prevPosCS)
+{
+    float3 posNDC = posCS.xyz * rcp(posCS.w);
+    float3 prevPosNDC = prevPosCS.xyz * rcp(prevPosCS.w);
+
+    float3 velocity;
+    // Calculate forward velocity
+    velocity = (posNDC.xyz - prevPosNDC.xyz);
+
+    return velocity;
+}
 #endif

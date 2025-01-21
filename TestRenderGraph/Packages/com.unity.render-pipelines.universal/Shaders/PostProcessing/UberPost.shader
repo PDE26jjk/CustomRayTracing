@@ -9,10 +9,13 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
         #pragma multi_compile_local_fragment _ _DITHERING
         #pragma multi_compile_local_fragment _ _GAMMA_20 _LINEAR_TO_SRGB_CONVERSION
         #pragma multi_compile_local_fragment _ _USE_FAST_SRGB_LINEAR_CONVERSION
+        #pragma multi_compile_local_fragment _ _ENABLE_ALPHA_OUTPUT
         #include_with_pragmas "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRenderingKeywords.hlsl"
         #pragma multi_compile_fragment _ DEBUG_DISPLAY
         #pragma multi_compile_fragment _ SCREEN_COORD_OVERRIDE
         #pragma multi_compile_local_fragment _ HDR_INPUT HDR_ENCODING
+
+        #pragma dynamic_branch_local_fragment _ _HDR_OVERLAY
 
         #ifdef HDR_ENCODING
         #define HDR_INPUT 1 // this should be defined when HDR_ENCODING is defined
@@ -52,7 +55,6 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
         float4 _Lut_Params;
         float4 _UserLut_Params;
         float4 _Bloom_Params;
-        float _Bloom_RGBM;
         float4 _LensDirt_Params;
         float _LensDirt_Intensity;
         float4 _Distortion_Params1;
@@ -80,7 +82,6 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
 
         #define BloomIntensity          _Bloom_Params.x
         #define BloomTint               _Bloom_Params.yzw
-        #define BloomRGBM               _Bloom_RGBM.x
         #define LensDirtScale           _LensDirt_Params.xy
         #define LensDirtOffset          _LensDirt_Params.zw
         #define LensDirtIntensity       _LensDirt_Intensity.x
@@ -109,6 +110,9 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
         #define DitheringScale          _Dithering_Params.xy
         #define DitheringOffset         _Dithering_Params.zw
 
+        #define AlphaScale              1.0
+        #define AlphaBias               0.0
+
         #define MinNits                 _HDROutputLuminanceParams.x
         #define MaxNits                 _HDROutputLuminanceParams.y
         #define PaperWhite              _HDROutputLuminanceParams.z
@@ -127,7 +131,7 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
                 if (DistIntensity > 0.0)
                 {
                     float wu = ru * DistTheta;
-                    ru = tan(wu) * (rcp(ru * DistSigma));
+                    ru = tan(wu) * (rcp(ru * DistSigma + HALF_MIN)); // Add HALF_MIN to avoid 1/0
                     uv = uv + ruv * (ru - 1.0);
                 }
                 else
@@ -148,7 +152,10 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
             float2 uv = SCREEN_COORD_APPLY_SCALEBIAS(UnityStereoTransformScreenSpaceTex(input.texcoord));
             float2 uvDistorted = DistortUV(uv);
 
-            half3 color = (0.0).xxx;
+            // NOTE: Hlsl specifies missing input.a to fill 1 (0 for .rgb).
+            // InputColor is a "bottom" layer for alpha output.
+            half4 inputColor = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, ClampUVForBilinear(SCREEN_COORD_REMOVE_SCALEBIAS(uvDistorted), _BlitTexture_TexelSize.xy));
+            half3 color = inputColor.rgb;
 
             #if _CHROMATIC_ABERRATION
             {
@@ -158,15 +165,11 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
                 float2 end = uv - coords * dot(coords, coords) * ChromaAmount;
                 float2 delta = (end - uv) / 3.0;
 
-                half r = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, ClampUVForBilinear(SCREEN_COORD_REMOVE_SCALEBIAS(uvDistorted)                , _BlitTexture_TexelSize.xy)).x;
+                half r = color.r;
                 half g = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, ClampUVForBilinear(SCREEN_COORD_REMOVE_SCALEBIAS(DistortUV(delta + uv)      ), _BlitTexture_TexelSize.xy)).y;
                 half b = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, ClampUVForBilinear(SCREEN_COORD_REMOVE_SCALEBIAS(DistortUV(delta * 2.0 + uv)), _BlitTexture_TexelSize.xy)).z;
 
                 color = half3(r, g, b);
-            }
-            #else
-            {
-                color = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, ClampUVForBilinear(SCREEN_COORD_REMOVE_SCALEBIAS(uvDistorted), _BlitTexture_TexelSize.xy)).xyz;
             }
             #endif
 
@@ -174,6 +177,7 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
             #if UNITY_COLORSPACE_GAMMA
             {
                 color = GetSRGBToLinear(color);
+                inputColor = GetSRGBToLinear(inputColor);   // Deadcode removal if no effect on output color
             }
             #endif
 
@@ -188,23 +192,17 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
                 #endif
 
                 #if _BLOOM_HQ
-                half4 bloom = SampleTexture2DBicubic(TEXTURE2D_X_ARGS(_Bloom_Texture, sampler_LinearClamp), SCREEN_COORD_REMOVE_SCALEBIAS(uvBloom), _Bloom_Texture_TexelSize.zwxy, (1.0).xx, unity_StereoEyeIndex);
+                half3 bloom = SampleTexture2DBicubic(TEXTURE2D_X_ARGS(_Bloom_Texture, sampler_LinearClamp), SCREEN_COORD_REMOVE_SCALEBIAS(uvBloom), _Bloom_Texture_TexelSize.zwxy, (1.0).xx, unity_StereoEyeIndex).xyz;
                 #else
-                half4 bloom = SAMPLE_TEXTURE2D_X(_Bloom_Texture, sampler_LinearClamp, SCREEN_COORD_REMOVE_SCALEBIAS(uvBloom));
+                half3 bloom = SAMPLE_TEXTURE2D_X(_Bloom_Texture, sampler_LinearClamp, SCREEN_COORD_REMOVE_SCALEBIAS(uvBloom)).xyz;
                 #endif
 
                 #if UNITY_COLORSPACE_GAMMA
-                bloom.xyz *= bloom.xyz; // γ to linear
+                bloom *= bloom; // γ to linear
                 #endif
 
-                UNITY_BRANCH
-                if (BloomRGBM > 0)
-                {
-                    bloom.xyz = DecodeRGBM(bloom);
-                }
-
-                bloom.xyz *= BloomIntensity;
-                color += bloom.xyz * BloomTint;
+                bloom *= BloomIntensity;
+                color += bloom * BloomTint;
 
                 #if defined(BLOOM_DIRT)
                 {
@@ -216,6 +214,11 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
                     dirt *= LensDirtIntensity;
                     color += dirt * bloom.xyz;
                 }
+                #endif
+
+                #if _ENABLE_ALPHA_OUTPUT
+                // Bloom should also spread in areas with zero alpha, so we save the image with bloom here to do the mixing at the end of the shader
+                inputColor.xyz = color.xyz;
                 #endif
             }
             #endif
@@ -251,11 +254,13 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
             #if _GAMMA_20 && !UNITY_COLORSPACE_GAMMA
             {
                 color = LinearToGamma20(color);
+                inputColor = LinearToGamma20(inputColor);
             }
             // Back to sRGB
             #elif UNITY_COLORSPACE_GAMMA || _LINEAR_TO_SRGB_CONVERSION
             {
                 color = GetLinearToSRGB(color);
+                inputColor = LinearToSRGB(inputColor);
             }
             #endif
 
@@ -270,8 +275,29 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
 
             #ifdef HDR_ENCODING
             {
-                float4 uiSample = SAMPLE_TEXTURE2D_X(_OverlayUITexture, sampler_PointClamp, input.texcoord);
-                color.rgb = SceneUIComposition(uiSample, color.rgb, PaperWhite, MaxNits);
+                // HDR UI composition
+                UNITY_BRANCH if(_HDR_OVERLAY)
+                {
+                    float4 uiSample = SAMPLE_TEXTURE2D_X(_OverlayUITexture, sampler_PointClamp, input.texcoord);
+                    color.rgb = SceneUIComposition(uiSample, color.rgb, PaperWhite, MaxNits);
+                }
+            }
+            #endif
+
+            // Alpha mask
+            #if _ENABLE_ALPHA_OUTPUT
+            {
+                // Post processing is not applied on pixels with zero alpha
+                // The alpha scale and bias control how steep is the transition between the post-processed and plain regions
+                half alpha = inputColor.a * AlphaScale + AlphaBias;
+                // Saturate is necessary to avoid issues when additive blending pushes the alpha over 1.
+                // NOTE: in UNITY_COLORSPACE_GAMMA we alpha blend in gamma here, linear otherwise.
+                color.xyz = lerp(inputColor.xyz, color.xyz, saturate(alpha));
+            }
+            #endif
+
+            #ifdef HDR_ENCODING
+            {
                 color.rgb = OETF(color.rgb, MaxNits);
             }
             #endif
@@ -285,7 +311,12 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
             }
             #endif
 
-            return half4(color, 1.0);
+            #if _ENABLE_ALPHA_OUTPUT
+            // Saturate is necessary to avoid issues when additive blending pushes the alpha over 1.
+            return half4(color, saturate(inputColor.a));
+            #else
+            return half4(color, 1);
+            #endif
         }
 
     ENDHLSL
@@ -295,6 +326,7 @@ Shader "Hidden/Universal Render Pipeline/UberPost"
         Tags { "RenderType" = "Opaque" "RenderPipeline" = "UniversalPipeline"}
         LOD 100
         ZTest Always ZWrite Off Cull Off
+        //ColorMask RGB
 
         Pass
         {

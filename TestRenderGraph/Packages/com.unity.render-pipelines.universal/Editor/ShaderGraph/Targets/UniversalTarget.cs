@@ -503,6 +503,7 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
                 m_SupportVFXToggle = new Toggle("") { value = m_SupportVFX };
                 context.AddProperty("Support VFX Graph", m_SupportVFXToggle, (evt) =>
                 {
+					registerUndo("Change Support VFX Graph");
                     m_SupportVFX = m_SupportVFXToggle.value;
                 });
             }
@@ -514,7 +515,7 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
         }
 
         // this is a copy of ZTestMode, but hides the "Disabled" option, which is invalid
-        enum ZTestModeForUI
+        internal enum ZTestModeForUI
         {
             Never = 1,
             Less = 2,
@@ -694,6 +695,9 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
             for (int i = 0; i < m_Datas.Count; i++)
             {
                 var data = m_Datas[i];
+                if (data.value is null)
+                    continue;
+
                 var type = data.value.GetType();
 
                 // Data requirement interfaces need generic type arguments
@@ -710,7 +714,17 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
                 return;
 
             // Ensure data object exists in list
-            var data = m_Datas.SelectValue().FirstOrDefault(x => x.GetType().Equals(typeof(T))) as T;
+
+            T data = null;
+            foreach (var x in m_Datas.SelectValue())
+            {
+                if (x is T y)
+                {
+                    data = y;
+                    break;
+                }
+            }
+
             if (data == null)
             {
                 data = Activator.CreateInstance(typeof(T)) as T;
@@ -1420,9 +1434,6 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
         // used by sprite targets, NOT used by lit/unlit anymore
         public static readonly RenderStateCollection Default = new RenderStateCollection
         {
-            { RenderState.ZTest(ZTest.LEqual) },
-            { RenderState.ZWrite(ZWrite.On), new FieldCondition(UniversalFields.SurfaceOpaque, true) },
-            { RenderState.ZWrite(ZWrite.Off), new FieldCondition(UniversalFields.SurfaceTransparent, true) },
             { RenderState.Cull(Cull.Back), new FieldCondition(Fields.DoubleSided, false) },
             { RenderState.Cull(Cull.Off), new FieldCondition(Fields.DoubleSided, true) },
             { RenderState.Blend(Blend.One, Blend.Zero), new FieldCondition(UniversalFields.SurfaceOpaque, true) },
@@ -1689,11 +1700,11 @@ namespace UnityEditor.Rendering.Universal.ShaderGraph
             { kColor, IncludeLocation.Pregraph },
             { kTexture, IncludeLocation.Pregraph },
             { kCore, IncludeLocation.Pregraph },
+            { kFoveatedRenderingKeywords, IncludeLocation.Pregraph, true },
+            { kFoveatedRendering, IncludeLocation.Pregraph },
             { kLighting, IncludeLocation.Pregraph },
             { kInput, IncludeLocation.Pregraph },
             { kTextureStack, IncludeLocation.Pregraph },        // TODO: put this on a conditional
-            { kFoveatedRenderingKeywords, IncludeLocation.Pregraph, true },
-            { kFoveatedRendering, IncludeLocation.Pregraph },
             { kMipmapDebugMacros, IncludeLocation.Pregraph}
         };
 

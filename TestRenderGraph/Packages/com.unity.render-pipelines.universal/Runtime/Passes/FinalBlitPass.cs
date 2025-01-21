@@ -51,7 +51,7 @@ namespace UnityEngine.Rendering.Universal.Internal
         /// <seealso cref="RenderPassEvent"/>
         public FinalBlitPass(RenderPassEvent evt, Material blitMaterial, Material blitHDRMaterial)
         {
-            base.profilingSampler = new ProfilingSampler(nameof(FinalBlitPass));
+            profilingSampler = ProfilingSampler.Get(URPProfileId.BlitFinalToBackBuffer);
             base.useNativeRenderPass = false;
             m_PassData = new PassData();
             renderPassEvent = evt;
@@ -96,10 +96,11 @@ namespace UnityEngine.Rendering.Universal.Internal
             m_Source = colorHandle;
         }
 
-        static void SetupHDROutput(ColorGamut hdrDisplayColorGamut, Material material, HDROutputUtils.Operation hdrOperation, Vector4 hdrOutputParameters)
+        static void SetupHDROutput(ColorGamut hdrDisplayColorGamut, Material material, HDROutputUtils.Operation hdrOperation, Vector4 hdrOutputParameters, bool rendersOverlayUI)
         {
             material.SetVector(ShaderPropertyId.hdrOutputLuminanceParams, hdrOutputParameters);
             HDROutputUtils.ConfigureHDROutput(material, hdrDisplayColorGamut, hdrOperation);
+            CoreUtils.SetKeyword(material, ShaderKeywordStrings.HDROverlay, rendersOverlayUI);
         }
 
         /// <inheritdoc/>
@@ -127,7 +128,8 @@ namespace UnityEngine.Rendering.Universal.Internal
             UniversalCameraData cameraData = frameData.Get<UniversalCameraData>();
 
             bool outputsToHDR = renderingData.cameraData.isHDROutputActive;
-            InitPassData(cameraData, ref m_PassData, outputsToHDR ? BlitType.HDR : BlitType.Core);
+            bool outputsAlpha = false;
+            InitPassData(cameraData, ref m_PassData, outputsToHDR ? BlitType.HDR : BlitType.Core, outputsAlpha);
 
             if (m_PassData.blitMaterialData.material == null)
             {
@@ -150,7 +152,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                 m_Source = renderingData.cameraData.renderer.cameraColorTargetHandle;
             }
 
-            using (new ProfilingScope(cmd, ProfilingSampler.Get(URPProfileId.FinalBlit)))
+            using (new ProfilingScope(cmd, profilingSampler))
             {
                 m_PassData.blitMaterialData.material.enabledKeywords = null;
 
@@ -175,7 +177,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                     if (!cameraData.postProcessEnabled)
                         hdrOperation |= HDROutputUtils.Operation.ColorConversion;
 
-                    SetupHDROutput(cameraData.hdrDisplayColorGamut, m_PassData.blitMaterialData.material, hdrOperation, hdrOutputLuminanceParams);
+                    SetupHDROutput(cameraData.hdrDisplayColorGamut, m_PassData.blitMaterialData.material, hdrOperation, hdrOutputLuminanceParams, cameraData.rendersOverlayUI);
                 }
 
                 if (resolveToDebugScreen)
@@ -232,6 +234,8 @@ namespace UnityEngine.Rendering.Universal.Internal
             // we never want them to show up as wireframe
             cmd.SetWireframe(false);
 
+            CoreUtils.SetKeyword(data.blitMaterialData.material, ShaderKeywordStrings._ENABLE_ALPHA_OUTPUT, data.enableAlphaOutput);
+
             int shaderPassIndex = source.rt?.filterMode == FilterMode.Bilinear ? data.blitMaterialData.bilinearSamplerPass : data.blitMaterialData.nearestSamplerPass;
             Blitter.BlitTexture(cmd, source, scaleBias, data.blitMaterialData.material, shaderPassIndex);
         }
@@ -243,6 +247,7 @@ namespace UnityEngine.Rendering.Universal.Internal
             internal int sourceID;
             internal Vector4 hdrOutputLuminanceParams;
             internal bool requireSrgbConversion;
+            internal bool enableAlphaOutput;
             internal BlitMaterialData blitMaterialData;
             internal UniversalCameraData cameraData;
         }
@@ -251,35 +256,42 @@ namespace UnityEngine.Rendering.Universal.Internal
         /// Initialize the shared pass data.
         /// </summary>
         /// <param name="passData"></param>
-        private void InitPassData(UniversalCameraData cameraData, ref PassData passData, BlitType blitType)
+        private void InitPassData(UniversalCameraData cameraData, ref PassData passData, BlitType blitType, bool enableAlphaOutput)
         {
             passData.cameraData = cameraData;
             passData.requireSrgbConversion = cameraData.requireSrgbConversion;
+            passData.enableAlphaOutput = enableAlphaOutput;
 
             passData.blitMaterialData = m_BlitMaterialData[(int)blitType];
         }
 
-        internal void Render(RenderGraph renderGraph, UniversalCameraData cameraData, TextureHandle src, TextureHandle dest, TextureHandle overlayUITexture)
+        internal void Render(RenderGraph renderGraph, ContextContainer frameData, UniversalCameraData cameraData, in TextureHandle src, in TextureHandle dest, TextureHandle overlayUITexture)
         {
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("Final Blit", out var passData, base.profilingSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
-                UniversalRenderer renderer = cameraData.renderer as UniversalRenderer;
-                if (cameraData.requiresDepthTexture && renderer != null)
-                {
-                    if (renderer.renderingModeActual != RenderingMode.Deferred)
-                        builder.UseGlobalTexture(s_CameraDepthTextureID);
-                    else if (renderer.deferredLights.GbufferDepthIndex != -1)
-                        builder.UseGlobalTexture(DeferredLights.k_GBufferShaderPropertyIDs[renderer.deferredLights.GbufferDepthIndex]);
-                }
+                UniversalResourceData resourceData = frameData.Get<UniversalResourceData>();
+
+                // Only the UniversalRenderer guarantees that global textures will be available at this point
+                bool isUniversalRenderer = (cameraData.renderer as UniversalRenderer) != null;
+
+                if (cameraData.requiresDepthTexture && isUniversalRenderer)
+                    builder.UseGlobalTexture(s_CameraDepthTextureID);
 
                 bool outputsToHDR = cameraData.isHDROutputActive;
-                InitPassData(cameraData, ref passData, outputsToHDR ? BlitType.HDR : BlitType.Core);
+                bool outputsAlpha = cameraData.isAlphaOutputEnabled;
+                InitPassData(cameraData, ref passData, outputsToHDR ? BlitType.HDR : BlitType.Core, outputsAlpha);
 
                 passData.sourceID = ShaderPropertyId.sourceTex;
                 passData.source = src;
                 builder.UseTexture(src, AccessFlags.Read);
                 passData.destination = dest;
                 builder.SetRenderAttachment(dest, 0, AccessFlags.Write);
+
+#if ENABLE_VR && ENABLE_XR_MODULE
+                // This is a screen-space pass, make sure foveated rendering is disabled for non-uniform renders
+                bool passSupportsFoveation = !XRSystem.foveatedRenderingCaps.HasFlag(FoveatedRenderingCaps.NonUniformRaster);
+                builder.EnableFoveatedRasterization(cameraData.xr.supportsFoveatedRendering && passSupportsFoveation);
+#endif
 
                 if (outputsToHDR && overlayUITexture.IsValid())
                 {
@@ -318,7 +330,7 @@ namespace UnityEngine.Rendering.Universal.Internal
                         if (!data.cameraData.postProcessEnabled)
                             hdrOperation |= HDROutputUtils.Operation.ColorConversion;
 
-                        SetupHDROutput(data.cameraData.hdrDisplayColorGamut, data.blitMaterialData.material, hdrOperation, data.hdrOutputLuminanceParams);
+                        SetupHDROutput(data.cameraData.hdrDisplayColorGamut, data.blitMaterialData.material, hdrOperation, data.hdrOutputLuminanceParams, data.cameraData.rendersOverlayUI);
                     }
 
                     if (resolveToDebugScreen)

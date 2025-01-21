@@ -21,7 +21,7 @@ namespace UnityEngine.Rendering.Universal.Internal
 
         public DeferredPass(RenderPassEvent evt, DeferredLights deferredLights)
         {
-            base.profilingSampler = new ProfilingSampler(nameof(DeferredPass));
+            profilingSampler = new ProfilingSampler("Render Deferred Lighting");
             base.renderPassEvent = evt;
             m_DeferredLights = deferredLights;
         }
@@ -79,7 +79,7 @@ namespace UnityEngine.Rendering.Universal.Internal
             UniversalLightData lightData = frameData.Get<UniversalLightData>();
             UniversalShadowData shadowData = frameData.Get<UniversalShadowData>();
 
-            using (var builder = renderGraph.AddRasterRenderPass<PassData>("Deferred Lighting Pass", out var passData, base.profilingSampler))
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData, profilingSampler))
             {
                 passData.cameraData = cameraData;
                 passData.lightData = lightData;
@@ -111,10 +111,6 @@ namespace UnityEngine.Rendering.Universal.Internal
                         }
                     }
                 }
-
-                // Without NRP GBuffer textures are set after GBuffer, we only do this here to avoid breaking the pass
-                if (renderGraph.nativeRenderPassesEnabled)
-                    GBufferPass.SetGlobalGBufferTextures(builder, gbuffer, ref m_DeferredLights);
 
                 builder.AllowPassCulling(false);
                 builder.AllowGlobalStateModification(true);

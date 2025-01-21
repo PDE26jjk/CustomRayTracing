@@ -4,7 +4,6 @@ Shader "Hidden/Light2D"
     {
         [HideInInspector] _SrcBlend("__src", Float) = 1.0
         [HideInInspector] _DstBlend("__dst", Float) = 0.0
-        [Enum(UnityEngine.Rendering.CompareFunction)] _HandleZTest("_HandleZTest", Int) = 4
     }
 
     SubShader
@@ -15,7 +14,7 @@ Shader "Hidden/Light2D"
         {
             Blend [_SrcBlend][_DstBlend]
             ZWrite Off
-            ZTest [_HandleZTest]
+            ZTest Off
             Cull Off
 
             HLSLPROGRAM
@@ -27,7 +26,7 @@ Shader "Hidden/Light2D"
             #pragma multi_compile_local USE_POINT_LIGHT_COOKIES __
             #pragma multi_compile_local LIGHT_QUALITY_FAST __
 
-            #include "Packages/com.unity.render-pipelines.universal/Shaders/2D/Include/ShapeLightShared.hlsl"
+            #include_with_pragmas "Packages/com.unity.render-pipelines.universal/Shaders/2D/Include/ShapeLightShared.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/Shaders/2D/Include/LightingUtility.hlsl"
 
@@ -218,7 +217,7 @@ Shader "Hidden/Light2D"
                 return ToFragmentOutput(lightColor * _InverseHDREmulationScale);
             }
 
-            FragmentOutput frag(Varyings i) : SV_Target
+            FragmentOutput frag(Varyings i)
             {
 
                 PerLight2D light;

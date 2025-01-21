@@ -13,11 +13,12 @@ namespace UnityEngine.Rendering.Universal
         public int endLayerValue;
         public SortingLayerRange layerRange;
         public LightStats lightStats;
+        public bool useNormals;
         private unsafe fixed int renderTargetIds[4];
         private unsafe fixed bool renderTargetUsed[4];
 
         public List<Light2D> lights;
-        public List<Light2D> shadowLights;
+        public List<int> shadowIndices;
         public List<ShadowCasterGroup2D> shadowCasters;
 
         internal int[] activeBlendStylesIndices;
@@ -34,7 +35,7 @@ namespace UnityEngine.Rendering.Universal
             }
 
             lights = new List<Light2D>();
-            shadowLights = new List<Light2D>();
+            shadowIndices = new List<int>();
             shadowCasters = new List<ShadowCasterGroup2D>();
         }
 
@@ -145,6 +146,7 @@ namespace UnityEngine.Rendering.Universal
             var cachedSortingLayers = Light2DManager.GetCachedSortingLayer();
             InitializeBatchInfos(cachedSortingLayers);
 
+            bool anyNormals = false;
             batchCount = 0;
             for (var i = 0; i < cachedSortingLayers.Length;)
             {
@@ -175,7 +177,17 @@ namespace UnityEngine.Rendering.Universal
                 layerBatch.layerRange = sortingLayerRange;
                 layerBatch.lightStats = lightStats;
 
+                anyNormals |= layerBatch.lightStats.useNormalMap;
+
                 i = upperLayerInBatch + 1;
+            }
+
+            // Account for Sprite Mask and normal map usage as there might be masks on a different layer that need to mask out the normals
+            for (var i = 0; i < batchCount; ++i)
+            {
+                ref var layerBatch = ref s_LayerBatches[i];
+                var hasSpriteMask = SpriteMaskUtility.HasSpriteMaskInLayerRange(layerBatch.layerRange);
+                layerBatch.useNormals = layerBatch.lightStats.useNormalMap || (anyNormals && hasSpriteMask);
             }
 
             SetupActiveBlendStyles();

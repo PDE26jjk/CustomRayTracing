@@ -33,6 +33,10 @@ namespace UnityEditor.Rendering.Universal
                 (serialized, owner) => !serialized.renderPostProcessing.boolValue && (AntialiasingMode)serialized.antialiasing.intValue != AntialiasingMode.None,
                 (serialized, owner) => EditorGUILayout.HelpBox(Styles.disabledPostprocessingAntiAliasWarning, MessageType.Warning));
 
+            private static readonly CED.IDrawer MSAAWarningDrawer = CED.Conditional(
+                (serialized, owner) => (GraphicsSettings.currentRenderPipeline is UniversalRenderPipelineAsset asset && asset.msaaSampleCount > 1) && serialized.baseCameraSettings.allowMSAA.boolValue == true && (AntialiasingMode)serialized.antialiasing.intValue == AntialiasingMode.TemporalAntiAliasing,
+                (serialized, owner) => EditorGUILayout.HelpBox(Styles.MSAAWarning, MessageType.Warning));
+
             private static readonly CED.IDrawer PostProcessingStopNaNsWarningDrawer = CED.Conditional(
                 (serialized, owner) => !s_PostProcessingWarningShown && IsAnyRendererHasPostProcessingEnabled(serialized, UniversalRenderPipeline.asset) && serialized.stopNaNs.boolValue,
                 (serialized, owner) =>
@@ -60,6 +64,7 @@ namespace UnityEditor.Rendering.Universal
                     ),
                 PostProcessingAAWarningDrawer,
                 DisabledPostProcessingAAWarningDrawer,
+                MSAAWarningDrawer,
                 CED.Conditional(
                     (serialized, owner) => !serialized.antialiasing.hasMultipleDifferentValues,
                     CED.Group(
@@ -244,7 +249,7 @@ namespace UnityEditor.Rendering.Universal
                 {
                     p.taaFrameInfluence.floatValue = 1.0f - EditorGUILayout.Slider(Styles.taaBaseBlendFactor, 1.0f - p.taaFrameInfluence.floatValue, 0.6f, 0.98f);
                     EditorGUILayout.Slider(p.taaJitterScale, 0.0f, 1.0f, Styles.taaJitterScale);
-                    EditorGUILayout.Slider(p.taaMipBias, -0.5f, 0.0f, Styles.taaMipBias);
+                    EditorGUILayout.Slider(p.taaMipBias, -1.0f, 0.0f, Styles.taaMipBias);
 
                     if(p.taaQuality.intValue >= (int)TemporalAAQuality.Medium)
                         EditorGUILayout.Slider(p.taaVarianceClampScale, 0.6f, 1.2f, Styles.taaVarianceClampScale);

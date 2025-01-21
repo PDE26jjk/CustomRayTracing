@@ -226,7 +226,7 @@ namespace UnityEditor
             /// The text and tooltip for the render face GUI.
             /// </summary>
             public static readonly GUIContent cullingText = EditorGUIUtility.TrTextContent("Render Face",
-                "Specifies which faces to cull from your geometry. Front culls front faces. Back culls backfaces. None means that both sides are rendered.");
+                "Specifies which faces to cull from your geometry. Front culls front faces. Back culls back faces. Both means that both sides are rendered.");
 
             /// <summary>
             /// The text and tooltip for the depth write GUI.
@@ -846,8 +846,7 @@ namespace UnityEditor
             // user has explicitly selected a render queue and we should not override it.
             //
             bool isShaderGraph = material.IsShaderGraph(); // Non-shadergraph materials use automatic behavior
-            int rawRenderQueue = MaterialAccess.ReadMaterialRawRenderQueue(material);
-            if (!isShaderGraph || rawRenderQueue == -1)
+            if (!isShaderGraph || material.rawRenderQueue == -1)
             {
                 material.SetFloat(Property.QueueControl, (float)QueueControl.Auto); // Automatic behavior - surface type override
             }

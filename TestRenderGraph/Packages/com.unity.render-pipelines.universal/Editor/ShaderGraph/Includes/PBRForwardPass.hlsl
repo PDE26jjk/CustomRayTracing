@@ -34,19 +34,8 @@ void InitializeInputData(Varyings input, SurfaceDescription surfaceDescription, 
 
     inputData.fogCoord = InitializeInputDataFog(float4(input.positionWS, 1.0), input.fogFactorAndVertexLight.x);
     inputData.vertexLighting = input.fogFactorAndVertexLight.yzw;
-#if defined(DYNAMICLIGHTMAP_ON)
-    inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.dynamicLightmapUV.xy, input.sh, inputData.normalWS);
-#elif !defined(LIGHTMAP_ON) && (defined(PROBE_VOLUMES_L1) || defined(PROBE_VOLUMES_L2))
-    inputData.bakedGI = SAMPLE_GI(input.sh,
-        GetAbsolutePositionWS(inputData.positionWS),
-        inputData.normalWS,
-        inputData.viewDirectionWS,
-        input.positionCS.xy);
-#else
-    inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.sh, inputData.normalWS);
-#endif
+
     inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(input.positionCS);
-    inputData.shadowMask = SAMPLE_SHADOWMASK(input.staticLightmapUV);
 
     #if defined(DEBUG_DISPLAY)
     #if defined(DYNAMICLIGHTMAP_ON)
@@ -58,8 +47,31 @@ void InitializeInputData(Varyings input, SurfaceDescription surfaceDescription, 
     inputData.vertexSH = input.sh;
     #endif
 
+    #if defined(USE_APV_PROBE_OCCLUSION)
+    inputData.probeOcclusion = input.probeOcclusion;
+    #endif
+
     inputData.positionCS = input.positionCS;
     #endif
+}
+
+void InitializeBakedGIData(Varyings input, inout InputData inputData)
+{
+#if defined(DYNAMICLIGHTMAP_ON)
+    inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.dynamicLightmapUV.xy, input.sh, inputData.normalWS);
+    inputData.shadowMask = SAMPLE_SHADOWMASK(input.staticLightmapUV);
+#elif !defined(LIGHTMAP_ON) && (defined(PROBE_VOLUMES_L1) || defined(PROBE_VOLUMES_L2))
+    inputData.bakedGI = SAMPLE_GI(input.sh,
+        GetAbsolutePositionWS(inputData.positionWS),
+        inputData.normalWS,
+        inputData.viewDirectionWS,
+        input.positionCS.xy,
+        input.probeOcclusion,
+        inputData.shadowMask);
+#else
+    inputData.bakedGI = SAMPLE_GI(input.staticLightmapUV, input.sh, inputData.normalWS);
+    inputData.shadowMask = SAMPLE_SHADOWMASK(input.staticLightmapUV);
+#endif
 }
 
 PackedVaryings vert(Attributes input)
@@ -142,9 +154,11 @@ void frag(
 
     surface.albedo = AlphaModulate(surface.albedo, surface.alpha);
 
-#ifdef _DBUFFER
+#if defined(_DBUFFER)
     ApplyDecalToSurfaceData(unpacked.positionCS, surface, inputData);
 #endif
+
+    InitializeBakedGIData(unpacked, inputData);
 
     half4 color = UniversalFragmentPBR(inputData, surface);
     color.rgb = MixFog(color.rgb, inputData.fogCoord);
