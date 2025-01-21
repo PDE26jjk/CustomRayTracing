@@ -1,5 +1,10 @@
-*/
+*
+!/TestRenderGraph/
 !/*/Assets/
 !/*/Packages/
 !/*/ProjectSettings/
 !/*/UserSettings/
+!/*/Assets/**
+!/*/Packages/**
+!/*/ProjectSettings/**
+!/*/UserSettings/**

@@ -12,12 +12,6 @@
 #include "BRDF.hlsl"
 #include "Global.hlsl"
 
-#pragma raytracing test
-
-#pragma shader_feature_raytracing _NORMALMAP
-#pragma shader_feature_raytracing _METALLICSPECGLOSSMAP
-#pragma shader_feature_raytracing _EMISSION
-#pragma shader_feature_raytracing _SURFACE_TYPE_TRANSPARENT
 
 float3 GetNormalTS(float2 uv)
 {
@@ -64,10 +58,10 @@ void ClosestHitMain(inout PathPayload payload : SV_RayPayload, AttributeData att
 	// Construct TBN
 	float3x3 TBN = GetLocalFrame(worldNormal);
 
-	float3 albedo = _BaseColor.xyz * _BaseMap.SampleLevel(sampler__BaseMap, _BaseMap_ST.xy * v.uv + _BaseMap_ST.zw, 0).xyz;
+	float4 baseMap = _BaseMap.SampleLevel(sampler__BaseMap, _BaseMap_ST.xy * v.uv + _BaseMap_ST.zw, 0);
 
 	// Alpha clip
-	float albedoAlpha = _BaseMap.SampleLevel(sampler__BaseMap, _BaseMap_ST.xy * v.uv + _BaseMap_ST.zw, 0).w;
+	float albedoAlpha = baseMap.w;
 	if(albedoAlpha < _Cutoff)
 	{
 		payload.radiance = float3(1, 1, 1);
@@ -78,7 +72,9 @@ void ClosestHitMain(inout PathPayload payload : SV_RayPayload, AttributeData att
 		payload.T = RayTCurrent();
 		return;
 	}
-
+	
+	float3 albedo = _BaseColor.xyz * baseMap.xyz;
+	
 	float3 metallic = _Metallic;
 
 	float smoothness = _Smoothness;
@@ -99,7 +95,6 @@ void ClosestHitMain(inout PathPayload payload : SV_RayPayload, AttributeData att
 #if _EMISSION
 	emission = _EmissionColor.xyz * _EmissionMap.SampleLevel(sampler__EmissionMap, _EmissionMap_ST.xy * v.uv + _EmissionMap_ST.zw, 0).xyz;
 #endif
-
 	metallic = clamp(metallic, 1e-4, 1 - 1e-4);
 	smoothness = clamp(smoothness, 1e-4, 1 - 1e-4);
 

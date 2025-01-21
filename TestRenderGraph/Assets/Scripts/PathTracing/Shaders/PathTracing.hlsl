@@ -1,0 +1,295 @@
+#ifndef RT_PATHTRACING
+#define RT_PATHTRACING
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/CommonLighting.hlsl"
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/ImageBasedLighting.hlsl"
+
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+#include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/UnityGBuffer.hlsl"
+
+#include "includes/Restir.hlsl"
+#include "includes/Utils.hlsl"
+#include "includes/Global.hlsl"
+#include "includes/BRDF.hlsl"
+
+uint g_ConvergenceStep;
+uint g_FrameIndex;
+float g_Zoom;
+float g_AspectRatio;
+uint g_BounceCountOpaque;
+uint g_BounceCountTransparent;
+int g_ReSTIR;
+int g_ClearBuffer;
+
+RaytracingAccelerationStructure g_AccelStruct : register(t0, space1);
+
+RWTexture2D<float4> g_Output : register(u0);
+
+TextureCube<float4> g_EnvTex;
+SamplerState sampler_g_EnvTex;
+
+Texture2D<float4> _DepthTex;
+
+Texture2D<float4> _AlbedoBufferTex; // GBuffer_0
+
+Texture2D<float4> _SpecularBufferTex; // GBuffer_1
+
+Texture2D<float4> _NormalBufferTex; // GBuffer_2
+
+RWStructuredBuffer<Reservoir> _RestirBuffer;
+
+#pragma max_recursion_depth 10
+
+float4 DecodeNormalBuffer(uint2 texcoord)
+{    
+    float4 normalBuffer = _NormalBufferTex[texcoord];
+    float3 packNormalWS = normalBuffer.rgb;
+    float3 unpackNormalWS = UnpackNormal(packNormalWS);
+
+    // rgb = normalWS, a = smoothness
+    return float4(unpackNormalWS, clamp(normalBuffer.a, 1e-4, 1 - 1e-4));
+}
+
+float3 GetRayDirection(float2 frameCoord, uint2 launchDim, bool jit, inout uint seed)
+{
+    // Plus a jitter for anti-aliasing. Only works for frames-accumulating.
+    float2 ndcCoords = (frameCoord + 
+        (jit ? float2(RandomFloat01(seed), RandomFloat01(seed)) : float2(0, 0))
+        - float2(0.5, 0.5))
+        / float2(launchDim.x - 1, launchDim.y - 1);
+    
+    ndcCoords = ndcCoords * 2 - float2(1, 1);
+    ndcCoords = ndcCoords * g_Zoom;
+
+    // Get a ray in view space.
+    float3 viewDirection = normalize(float3(ndcCoords.x * g_AspectRatio, ndcCoords.y, 1));
+
+    // Rotate the ray from view space to world space.
+    return mul((float3x3)unity_CameraToWorld, viewDirection);
+}
+
+[shader("raygeneration")]
+void PathTracingRayGenShader()
+{
+    uint2 launchIndex = DispatchRaysIndex().xy;
+    uint2 launchDim = DispatchRaysDimensions().xy;
+    
+    // Initial random number generator seed for this pixel. The rngState will change every time we draw a random number.
+    uint rngState = uint(uint(launchIndex.x) * uint(1973) + uint(launchIndex.y) * uint(9277) + uint(g_ConvergenceStep + g_FrameIndex) * uint(26699)) | uint(1);
+    
+    // Shoot rays through the center of a pixel.
+    float2 frameCoord = launchIndex + float2(0.5, 0.5);
+
+#define HYBRID_TRACING 1
+#if HYBRID_TRACING
+    float depthValue = _DepthTex[launchIndex].r;
+
+    if(g_ClearBuffer)
+    {
+        // Clean Reservoirs
+        uint bufferId = launchIndex.y * launchDim.x + launchIndex.x;
+        Reservoir emptyReservoir;
+        emptyReservoir.sample.viewPos = float3(0, 0, 0);
+        emptyReservoir.sample.viewNormal = float3(0, 0, 0);
+        emptyReservoir.sample.samplePos = float3(0, 0, 0);
+        emptyReservoir.sample.sampleNormal = float3(0, 0, 0);
+        emptyReservoir.sample.radiance = float3(0, 0, 0);
+        emptyReservoir.w = 0;
+        emptyReservoir.M = 0;
+        emptyReservoir.Wout = 0;
+        _RestirBuffer[bufferId] = emptyReservoir;        
+    }
+
+    // This point is part of the background
+    if(depthValue == 0.0)
+    {
+        float3 sampleDir = GetRayDirection(frameCoord, launchDim, false, rngState);
+        float3 envColor = g_EnvTex.SampleLevel(sampler_g_EnvTex, sampleDir, 0).xyz;
+        g_Output[launchIndex] = float4(envColor, 1);
+
+        uint bufferId = launchIndex.y * launchDim.x + launchIndex.x;
+        Reservoir emptyReservoir;
+        emptyReservoir.sample.viewPos = float3(0, 0, 0);
+        emptyReservoir.sample.viewNormal = float3(0, 0, 0);
+        emptyReservoir.sample.samplePos = float3(0, 0, 0);
+        emptyReservoir.sample.sampleNormal = float3(0, 0, 0);
+        emptyReservoir.sample.radiance = float3(0, 0, 0);
+        emptyReservoir.w = 0;
+        emptyReservoir.M = 0;
+        emptyReservoir.Wout = 0;
+        _RestirBuffer[bufferId] = emptyReservoir;
+        return;
+    }
+
+    // Get the material properties
+    float4 albedo = _AlbedoBufferTex[launchIndex];
+    float4 specualrMetallic = _SpecularBufferTex[launchIndex];
+    float4 normalSmoothness = DecodeNormalBuffer(launchIndex);
+
+    PositionInputs posInput = GetPositionInput(launchIndex, 1.0 / launchDim.xy, depthValue, UNITY_MATRIX_I_VP, GetWorldToViewMatrix(), 0);
+    float distanceToCamera = length(posInput.positionWS);
+
+    // Compute the incident vector on the surfaces | i.e. w_o
+    const float3 viewWS = GetWorldSpaceNormalizeViewDir(posInput.positionWS);
+
+    // Create the local ortho basis
+    float3x3 localToWorld = GetLocalFrame(normalSmoothness.xyz);
+    float roughness = 1 - normalSmoothness.w;
+    float3 view_tangent = mul(localToWorld, viewWS);
+    float3 F0 = lerp(albedo.xyz, float3(0.04, 0.04, 0.04), specualrMetallic.r);
+
+    // float3 fresnel = FresnelSchlick(viewWS, normalSmoothness.xyz, F0);
+    float3 fresnel = evalFresnelSchlick(F0, float3(1, 1, 1), dot(viewWS, normalSmoothness.xyz));
+    float3 bounceDir_tangent, gBufferRadiance;
+    
+    float gBufferPdf = 0;
+    if(RandomFloat01(rngState) < normalSmoothness.w)
+    {// specular
+		float2 u = float2(RandomFloat01(rngState), RandomFloat01(rngState));
+		bounceDir_tangent = SampleGGXReflection(view_tangent, roughness, roughness, u, gBufferPdf);
+        // We will divide pdf later.
+		gBufferRadiance = EvalGGXVNDF(view_tangent, bounceDir_tangent, albedo.xyz, roughness);
+    }else
+    {// diffuse
+        bounceDir_tangent = SampleCosineHemisphere(float3(0, 0, 1), rngState);        
+        gBufferPdf = K_INV_PI * bounceDir_tangent.z;        
+        // We will divide pdf later.
+		gBufferRadiance = albedo.xyz * gBufferPdf;
+    }
+
+    // Compute the scattered vector on the surfaces | i.e. w_i
+    float3 scatteredDirection = mul(bounceDir_tangent, localToWorld);
+    float3 pushOff = normalSmoothness.xyz * K_RAY_ORIGIN_PUSH_OFF;
+    
+    RayDesc ray;
+    ray.Origin      = posInput.positionWS + pushOff;
+    ray.Direction   = scatteredDirection;
+    ray.TMin        = K_T_MIN;
+    ray.TMax        = K_T_MAX;
+
+    float3 throughput = float3(1, 1, 1);
+    float3 samplePointPos = float3(0, 0, 0);
+    float3 samplePointNormal = float3(0, 0, 0);
+#else    
+    float3 rayDirection = GetRayDirection(frameCoord, launchDim, true, rngState);    
+
+    RayDesc ray;
+    ray.Origin      = _WorldSpaceCameraPos;
+    ray.Direction   = rayDirection;
+    ray.TMin        = K_T_MIN;
+    ray.TMax        = K_T_MAX;
+
+    float3 throughput = float3(1, 1, 1);
+#endif
+    PathPayload payload;
+    payload.radiance                = float3(20, 0, 1);
+    payload.emission                = float3(0, 0, 0);
+    payload.rngState                = rngState;
+    payload.bounceIndexOpaque       = 0;
+    payload.bounceIndexTransparent  = 0;
+    payload.bounceRayDirection      = float3(0, 0, 0);
+    payload.pushOff                 = float3(0, 0, 0);
+    payload.hitPointNormal          = float3(0, 0, 0);
+    payload.T                       = 0;
+    
+    // Safe net for when shaders have compilation errors and don't increase the bounce index, resulting in an infinite loop.
+    uint safeNet = 0;
+    bool hit = false;
+    float3 db = float3(0, 0, 0);
+    TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, K_MISS_SHADER_PT_INDEX, ray, payload);
+    do
+    {
+        TraceRay(g_AccelStruct, 0, 0xFF, 0, 1, K_MISS_SHADER_PT_INDEX, ray, payload);
+        
+#if HYBRID_TRACING
+        if(g_ReSTIR > 0)
+        {
+            if(payload.bounceIndexOpaque + payload.bounceIndexTransparent == 1)
+            {
+                samplePointPos = ray.Origin + ray.Direction * payload.T;
+                samplePointNormal = payload.hitPointNormal;
+            }
+        }
+#endif
+
+        if(Luminance(payload.emission) > 0)
+        {// hit light, end the path
+            throughput *= payload.emission;
+            hit = true;
+            break;
+        }
+
+        // continue the path
+        throughput *= payload.radiance;
+
+#define ENABLE_RUSSIAN_ROULETTE 1
+#if ENABLE_RUSSIAN_ROULETTE
+        float pathStopProbability = 1;
+        pathStopProbability = max(throughput.r, max(throughput.g, throughput.b));
+        // Dark colors have higher chance to terminate the path early.
+        if (pathStopProbability < RandomFloat01(payload.rngState))
+        {
+            throughput = float3(0, 0, 0);
+            break;
+        }
+        throughput *= rcp(pathStopProbability);
+#endif
+
+        ray.Origin      = ray.Origin + ray.Direction * payload.T + payload.pushOff;
+        ray.Direction   = payload.bounceRayDirection;
+    }
+    while ((payload.bounceIndexOpaque <= g_BounceCountOpaque) && (payload.bounceIndexTransparent <= g_BounceCountTransparent) && (++safeNet < 1000));
+
+    if(!hit) throughput = float3(0, 0, 0);
+
+#if HYBRID_TRACING
+    if(g_ReSTIR > 0)
+    {
+        Reservoir R;
+        R.sample.viewPos = posInput.positionWS;
+        R.sample.viewNormal = normalSmoothness.xyz;
+        R.sample.samplePos = samplePointPos;
+        R.sample.sampleNormal = samplePointNormal;
+        R.sample.radiance = throughput;
+        // wi = p_hat(Xi) * W_Xi, mostly equlas Luminance(f(Xi)) * (1/pdf(Xi))
+        R.w = Luminance(throughput);
+        R.M = 1;
+        R.Wout = 1;
+
+        uint bufferId = launchIndex.y * launchDim.x + launchIndex.x;
+
+        // current reservoir
+        _RestirBuffer[bufferId] = R;
+
+        // cache GBuffer radiance (the first radiance)
+        g_Output[launchIndex] = float4(gBufferRadiance * rcp(gBufferPdf), 1);
+    }
+    else
+    {
+        throughput *= gBufferRadiance;
+
+        // Divide pdf to get the integral estimate.
+        throughput *= rcp(gBufferPdf);
+
+        // Accumulation?
+        float3 prevRadiance = g_Output[launchIndex].xyz;
+        float3 result = (g_ConvergenceStep == 0) ? throughput : lerp(prevRadiance, throughput, rcp(float(g_ConvergenceStep + 1)));
+        g_Output[launchIndex] = float4(result, 1);
+    }
+#else
+    // Accumulation?
+    float3 prevRadiance = g_Output[launchIndex].xyz;
+    float3 result = (g_ConvergenceStep == 0) ? throughput : lerp(prevRadiance, throughput, rcp(float(g_ConvergenceStep + 1)));
+    g_Output[launchIndex] = float4(result, 1);
+#endif
+}
+
+[shader("miss")]
+void MissShader0_Primary(inout PathPayload payload : SV_RayPayload)
+{
+    payload.emission                = g_EnvTex.SampleLevel(sampler_g_EnvTex, WorldRayDirection(), 0).xyz;
+    payload.bounceIndexOpaque       = K_MAX_BOUNCES;
+}
+
+#endif

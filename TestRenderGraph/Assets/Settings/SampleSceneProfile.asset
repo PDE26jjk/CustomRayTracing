@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0b2db86121404754db890f4c8dfe81b2, type: 3}
   m_Name: Bloom
   m_EditorClassIdentifier: 
-  active: 1
+  active: 0
   skipIterations:
     m_OverrideState: 1
     m_Value: 0
@@ -97,7 +97,7 @@ MonoBehaviour:
     dimension: 0
   activeCamera:
     m_OverrideState: 1
-    m_Value: 1
+    m_Value: 3
   bounceCount:
     m_OverrideState: 1
     m_Value: 8
@@ -106,10 +106,10 @@ MonoBehaviour:
     m_Value: 2048
   accumulation:
     m_OverrideState: 1
-    m_Value: 0
+    m_Value: 1
   restir:
     m_OverrideState: 1
-    m_Value: 0
+    m_Value: 1
   clearRestirBuffer:
     m_OverrideState: 1
     m_Value: 0

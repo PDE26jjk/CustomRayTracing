@@ -14,7 +14,7 @@
 #define K_INV_SQRT_2_PI                 0.3989422804f
 #define K_SQRT_2                        1.4142135624f
 #define K_INV_SQRT_2                    0.7071067812f
-#define K_T_MIN                         0
+#define K_T_MIN                         0.0001
 #define K_T_MAX                         10000
 #define K_FLT_MAX                       3.402823466e+38f
 #define K_MAX_BOUNCES                   1000
