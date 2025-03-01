@@ -44,16 +44,19 @@ void ReservoirMerge(inout Reservoir reservoir_1, in Reservoir reservoir_2, float
 
 // reservoir   : empty reservoir
 // reservoir_1 : neighbour reservoir
-void ReservoirUpdate_spatial(inout Reservoir reservoir, Reservoir reservoir_1, float rand)
+void ReservoirUpdate_spatial(inout Reservoir reservoir, Reservoir reservoir_1, float rand, inout uint Z)
 {
+    if (reservoir_1.M == 0) return;
     float w = Luminance(reservoir_1.sample.radiance) * reservoir_1.Wout * reservoir_1.M;
+    if (Luminance(reservoir_1.sample.radiance)) Z += reservoir_1.M;
 
     reservoir.w += w;
-    reservoir.M += 1;
+    reservoir.M += reservoir_1.M;
 
     if(reservoir.M > MAX_SPATIAL_REUSE)
     {
         reservoir.w *= MAX_SPATIAL_REUSE / reservoir.M;
+        reservoir.w = clamp(reservoir.w,1e-8f, 10e9f);
         reservoir.M = MAX_SPATIAL_REUSE;
     }
 

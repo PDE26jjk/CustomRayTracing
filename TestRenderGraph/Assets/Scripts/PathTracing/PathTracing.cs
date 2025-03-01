@@ -20,6 +20,8 @@ namespace UnityEngine.Rendering.Universal
         public BoolParameter accumulation = new BoolParameter(true);
 
         public BoolParameter restir = new BoolParameter(false);
+        
+        public BoolParameter restirSpatialSample = new BoolParameter(false);
 
         public BoolParameter clearRestirBuffer = new BoolParameter(false);
 

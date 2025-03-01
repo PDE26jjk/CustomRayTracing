@@ -215,9 +215,13 @@ void Spatial (uint3 id : SV_DispatchThreadID)
 
     uint bufferId = id.y * width + id.x;
     Reservoir curReservoir = _OldRestirBuffer[bufferId];
+    float3 result = g_Output[id.xy].xyz / (curReservoir.sample.radiance * curReservoir.Wout);
 
     // Background
-    if(curReservoir.M == 0) return;
+    // if(curReservoir.M == 0) {
+    //     g_Output[id.xy] = 0;
+    //  return;   
+    // }
 
     // Spatial Reuse | Need an additional pass.
     uint2 leftId = uint2(id.x > 0 ? id.x - 1 : id.x, id.y);
@@ -233,42 +237,48 @@ void Spatial (uint3 id : SV_DispatchThreadID)
     Reservoir topReservoir = _OldRestirBuffer[topBufferId];
     Reservoir bottomReservoir = _OldRestirBuffer[bottomBufferId];
 
-    Reservoir emptyReservoir;
+    Reservoir emptyReservoir =(Reservoir)0;
     emptyReservoir.sample.viewPos = float3(0, 0, 0);
     emptyReservoir.sample.viewNormal = float3(0, 0, 0);
     emptyReservoir.sample.samplePos = float3(0, 0, 0);
     emptyReservoir.sample.sampleNormal = float3(0, 0, 0);
-    emptyReservoir.sample.radiance = float3(1, 0, 1);
+    // emptyReservoir.sample.radiance = float3(1, 0, 1);
     emptyReservoir.w = 0;
     emptyReservoir.M = 0;
     emptyReservoir.Wout = 0;
 
-    if(curReservoir.M > 0)
-    {
-        ReservoirUpdate_spatial(emptyReservoir, curReservoir, RandomFloat01(rngState));
-        emptyReservoir.M = curReservoir.M;
-        emptyReservoir.Wout = emptyReservoir.w * rcp(emptyReservoir.M * Luminance(emptyReservoir.sample.radiance));
-        curReservoir = emptyReservoir;
-    }
-
-    //Reservoir copyReservoir = curReservoir;
-    //if(IsValidSpatialNeighbour(curReservoir, leftReservoir)) ReservoirMerge(curReservoir, leftReservoir, RandomFloat01(rngState));
-    //if(IsValidSpatialNeighbour(curReservoir, rightReservoir)) ReservoirMerge(curReservoir, rightReservoir, RandomFloat01(rngState));
-    //if(IsValidSpatialNeighbour(curReservoir, topReservoir)) ReservoirMerge(curReservoir, topReservoir, RandomFloat01(rngState));
-    //if(IsValidSpatialNeighbour(curReservoir, bottomReservoir)) ReservoirMerge(curReservoir, bottomReservoir, RandomFloat01(rngState));
-
+    // if(curReservoir.M > 0)
+    // {
+    //     ReservoirUpdate_spatial(emptyReservoir, curReservoir, RandomFloat01(rngState));
+    //     emptyReservoir.M = curReservoir.M + 1;
+    //     emptyReservoir.Wout = emptyReservoir.w * rcp(emptyReservoir.M * Luminance(emptyReservoir.sample.radiance));
+    //     curReservoir = emptyReservoir;
+    // }
+    
+    // //Reservoir copyReservoir = curReservoir;
+    uint Z = Luminance(curReservoir.sample.radiance) == 0 ? 0 : curReservoir.M;
+    if(IsValidSpatialNeighbour(curReservoir, leftReservoir)) ReservoirUpdate_spatial(curReservoir, leftReservoir, RandomFloat01(rngState),Z);
+    if(IsValidSpatialNeighbour(curReservoir, rightReservoir)) ReservoirUpdate_spatial(curReservoir, rightReservoir, RandomFloat01(rngState),Z);
+    if(IsValidSpatialNeighbour(curReservoir, topReservoir)) ReservoirUpdate_spatial(curReservoir, topReservoir, RandomFloat01(rngState),Z);
+    if(IsValidSpatialNeighbour(curReservoir, bottomReservoir)) ReservoirUpdate_spatial(curReservoir, bottomReservoir, RandomFloat01(rngState),Z);
+    // //
+    float w = rcp(Z * max(Luminance(curReservoir.sample.radiance),1e-9));
+    if (isinf(w)) w = 1;
+    curReservoir.Wout = curReservoir.w * w;
+    
     // Must be here to swap ReSTIR Buffer
     _CurRestirBuffer[bufferId] = curReservoir;
 
     // ReSTIR estimate: integral = f(X) * W_X    
-    float3 radiance = curReservoir.sample.radiance;// * curReservoir.Wout;
-    if(Luminance(curReservoir.sample.radiance) == 0)
-    {
-        radiance = float3(1, 0, 1);
-    }
+    float3 radiance = curReservoir.sample.radiance * curReservoir.Wout;
+    // if(Luminance(curReservoir.sample.radiance) == 0)
+    // {
+    //     radiance = float3(1, 0, 1);
+    // }
 
-    float3 result = radiance;
-    //float3 result = g_Output[id.xy].xyz * radiance;
+    // float3 result = radiance;
+    result *= radiance;
+    // result = curReservoir.w -100;
 
     // Since ReSTIR needs g_Output to cache the GBuffer radiance, accumulation not support yet.
     g_Output[id.xy] = float4(result, 1);

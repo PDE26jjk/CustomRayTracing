@@ -483,39 +483,42 @@ namespace UnityEngine.Rendering.Universal
                                 accumulationHistory.SwapRestirBuffer();
 
                                 // Spatial ReSTIR
-                                //using (var builder = renderGraph.AddComputePass<ReSTIRPassData>("Spatial ReSTIR Pass", out var passData, m_ProfilingSampler))
-                                //{
-                                //    passData.restirShader = rayTracingResources.ReSTIRCS;
-                                //    passData.width = cameraData.camera.pixelWidth;
-                                //    passData.height = cameraData.camera.pixelHeight;
-                                //    passData.convergenceStep = convergenceStep;
-                                //    passData.frameCount = Time.frameCount;
-                                //    passData.aspectRatio = cameraData.camera.aspect;
-                                //    passData.zoom = Mathf.Tan(Mathf.Deg2Rad * cameraData.camera.fieldOfView * 0.5f);
-                                //    passData.currentRestirBuffer = accumulationHistory.GetCurrentRestirBuffer();
-                                //    passData.oldRestirBuffer = accumulationHistory.GetOldRestirBuffer();
+                                if (m_PathTracing.restirSpatialSample.value)
+                                {
+                                    using (var builder = renderGraph.AddComputePass<ReSTIRPassData>("Spatial ReSTIR Pass", out var passData, m_ProfilingSampler))
+                                    {
+                                        passData.restirShader = rayTracingResources.ReSTIRCS;
+                                        passData.width = cameraData.camera.pixelWidth;
+                                        passData.height = cameraData.camera.pixelHeight;
+                                        passData.convergenceStep = convergenceStep;
+                                        passData.frameCount = Time.frameCount;
+                                        passData.aspectRatio = cameraData.camera.aspect;
+                                        passData.zoom = Mathf.Tan(Mathf.Deg2Rad * cameraData.camera.fieldOfView * 0.5f);
+                                        passData.currentRestirBuffer = accumulationHistory.GetCurrentRestirBuffer();
+                                        passData.oldRestirBuffer = accumulationHistory.GetOldRestirBuffer();
 
-                                //    // Output buffers
-                                //    builder.UseTexture(frameTexture, AccessFlags.ReadWrite);
-                                //    passData.output = frameTexture;
+                                        // Output buffers
+                                        builder.UseTexture(frameTexture, AccessFlags.ReadWrite);
+                                        passData.output = frameTexture;
 
-                                //    builder.SetRenderFunc((ReSTIRPassData data, ComputeGraphContext ctx) =>
-                                //    {
-                                //        const int kernel = 1;
-                                //        ctx.cmd.SetComputeBufferParam(data.restirShader, kernel, Shader.PropertyToID("_CurRestirBuffer"), data.currentRestirBuffer);
-                                //        ctx.cmd.SetComputeBufferParam(data.restirShader, kernel, Shader.PropertyToID("_OldRestirBuffer"), data.oldRestirBuffer);
-                                //        ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("width"), data.width);
-                                //        ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("height"), data.height);
-                                //        ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("g_ConvergenceStep"), data.convergenceStep);
-                                //        ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("g_FrameIndex"), data.frameCount);
-                                //        ctx.cmd.SetComputeFloatParam(data.restirShader, Shader.PropertyToID("g_Zoom"), data.zoom);
-                                //        ctx.cmd.SetComputeFloatParam(data.restirShader, Shader.PropertyToID("g_AspectRatio"), data.aspectRatio);
-                                //        ctx.cmd.SetComputeTextureParam(data.restirShader, kernel, Shader.PropertyToID("g_Output"), data.output);
-                                //        ctx.cmd.DispatchCompute(data.restirShader, kernel, (data.width + 7) / 8, (data.height + 7) / 8, 1);
-                                //    });
-                                //}
+                                        builder.SetRenderFunc((ReSTIRPassData data, ComputeGraphContext ctx) =>
+                                        {
+                                            const int kernel = 1;
+                                            ctx.cmd.SetComputeBufferParam(data.restirShader, kernel, Shader.PropertyToID("_CurRestirBuffer"), data.currentRestirBuffer);
+                                            ctx.cmd.SetComputeBufferParam(data.restirShader, kernel, Shader.PropertyToID("_OldRestirBuffer"), data.oldRestirBuffer);
+                                            ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("width"), data.width);
+                                            ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("height"), data.height);
+                                            ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("g_ConvergenceStep"), data.convergenceStep);
+                                            ctx.cmd.SetComputeIntParam(data.restirShader, Shader.PropertyToID("g_FrameIndex"), data.frameCount);
+                                            ctx.cmd.SetComputeFloatParam(data.restirShader, Shader.PropertyToID("g_Zoom"), data.zoom);
+                                            ctx.cmd.SetComputeFloatParam(data.restirShader, Shader.PropertyToID("g_AspectRatio"), data.aspectRatio);
+                                            ctx.cmd.SetComputeTextureParam(data.restirShader, kernel, Shader.PropertyToID("g_Output"), data.output);
+                                            ctx.cmd.DispatchCompute(data.restirShader, kernel, (data.width + 7) / 8, (data.height + 7) / 8, 1);
+                                        });
+                                    }
 
-                                //accumulationHistory.SwapRestirBuffer();
+                                    accumulationHistory.SwapRestirBuffer();
+                                }
                             }
 
                             // Clear Restir Buffer
